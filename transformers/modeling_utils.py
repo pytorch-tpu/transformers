@@ -232,7 +232,7 @@ class PreTrainedModel(nn.Module):
 
         self.base_model._prune_heads(heads_to_prune)
 
-    def save_pretrained(self, save_directory):
+    def save_pretrained(self, save_directory, xla_device=False):
         """ Save a model and its configuration file to a directory, so that it
             can be re-loaded using the `:func:`~transformers.PreTrainedModel.from_pretrained`` class method.
         """
@@ -246,7 +246,11 @@ class PreTrainedModel(nn.Module):
 
         # If we save using the predefined names, we can load using `from_pretrained`
         output_model_file = os.path.join(save_directory, WEIGHTS_NAME)
-        torch.save(model_to_save.state_dict(), output_model_file)
+        if xla_device:
+            import torch_xla.core.xla_model as xm
+            xm.save(model_to_save.state_dict(), output_model_file)
+        else:
+            torch.save(model_to_save.state_dict(), output_model_file)
         logger.info("Model weights saved in {}".format(output_model_file))
 
     @classmethod
