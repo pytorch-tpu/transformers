@@ -354,7 +354,7 @@ class PreTrainedTokenizer(object):
                     resolved_vocab_files[file_id] = None
                 else:
                     resolved_vocab_files[file_id] = cached_path(file_path, cache_dir=cache_dir,
-                            force_download=force_download, proxies=proxies, xla_device=xla_device)
+                        force_download=force_download, proxies=proxies, xla_device=xla_device)
         except EnvironmentError:
             if pretrained_model_name_or_path in s3_models:
                 msg = "Couldn't reach server at '{}' to download vocabulary files."

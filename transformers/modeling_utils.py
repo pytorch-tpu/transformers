@@ -372,7 +372,7 @@ class PreTrainedModel(nn.Module):
             # redirect to the cache, if necessary
             try:
                 resolved_archive_file = cached_path(archive_file, cache_dir=cache_dir, force_download=force_download,
-                        proxies=proxies, xla_device=xla_device)
+                    proxies=proxies, xla_device=xla_device)
             except EnvironmentError:
                 if pretrained_model_name_or_path in cls.pretrained_model_archive_map:
                     msg = "Couldn't reach server at '{}' to download pretrained weights.".format(

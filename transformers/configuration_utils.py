@@ -133,7 +133,7 @@ class PretrainedConfig(object):
         # redirect to the cache, if necessary
         try:
             resolved_config_file = cached_path(config_file, cache_dir=cache_dir, force_download=force_download,
-                    proxies=proxies, xla_device=xla_device)
+                proxies=proxies, xla_device=xla_device)
         except EnvironmentError:
             if pretrained_model_name_or_path in cls.pretrained_config_archive_map:
                 msg = "Couldn't reach server at '{}' to download pretrained model configuration file.".format(
