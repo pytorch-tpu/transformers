@@ -261,7 +261,7 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
 
         # Average all metrics from each shard
         def reduce_fn(results):
-            avg_result = defaultdict(int)
+            avg_result = defaultdict(float)
             for result in results:
                 for k, v in result.items():
                     avg_result[k] += v / float(len(results))
