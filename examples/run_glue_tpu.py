@@ -250,6 +250,11 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
                 preds = np.append(preds, logits.detach().cpu().numpy(), axis=0)
                 out_label_ids = np.append(out_label_ids, inputs['labels'].detach().cpu().numpy(), axis=0)
 
+        # Get all predictions and labels from all workers
+        preds = xm.mesh_reduce('eval_preds', preds, np.concatenate)
+        out_label_ids = xm.mesh_reduce(
+            'eval_out_label_ids', out_label_ids, np.concatenate)
+
         eval_loss = eval_loss / nb_eval_steps
         if args.output_mode == "classification":
             preds = np.argmax(preds, axis=1)
@@ -258,16 +263,6 @@ def evaluate(args, model, tokenizer, prefix="", disable_logging=False):
         result = compute_metrics(eval_task, preds, out_label_ids)
         results.update(result)
         results['eval_loss'] = eval_loss.item()
-
-        # Average all metrics from each shard
-        def reduce_fn(results):
-            avg_result = defaultdict(float)
-            for result in results:
-                for k, v in result.items():
-                    avg_result[k] += v / float(len(results))
-            return avg_result
-        results = xm.mesh_reduce(
-            'eval_avg_metrics', results, reduce_fn)
 
         output_eval_file = os.path.join(eval_output_dir, prefix, "eval_results.txt")
         if xm.is_master_ordinal():
