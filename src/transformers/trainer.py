@@ -31,8 +31,10 @@ import sys
 import tempfile
 import time
 import warnings
+import torch_xla.debug.profiler as xp
 from collections.abc import Mapping
 from pathlib import Path
+from threading import Thread
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 
@@ -851,7 +853,8 @@ class Trainer:
             dataloader_params["worker_init_fn"] = seed_worker
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
 
-        return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params))
+        # TODO(jonbolin): Disabling Accelerate on the dataloader (`Unknown device SPMD:0`)
+        return DataLoader(train_dataset, **dataloader_params)
 
     def _get_eval_sampler(self, eval_dataset: Dataset) -> Optional[torch.utils.data.Sampler]:
         # Deprecated code
@@ -1533,6 +1536,21 @@ class Trainer:
 
         return model
 
+    def _xla_sharded_dataloader(self, dataloader):
+        if is_torch_tpu_available():
+            sharding_spec = None
+            if self.args.spmd_batch_sharding:
+                import torch_xla.experimental.xla_sharding as xs
+                import torch_xla.runtime as xr
+                import torch_xla.distributed.parallel_loader as pl
+                num_devices = xr.global_device_count()
+                device_ids = np.arange(num_devices)
+                mesh = xs.Mesh(device_ids, (num_devices, 1))
+                sharding_spec = xs.ShardingSpec(mesh, (0, 1))
+            return pl.MpDeviceLoader(dataloader, self.args.device, input_sharding=sharding_spec, loader_prefetch_size=self.args.train_batch_size, device_prefetch_size=4)
+        else:
+            return dataloader
+
     def train(
         self,
         resume_from_checkpoint: Optional[Union[str, bool]] = None,
@@ -1938,7 +1956,13 @@ class Trainer:
                 rng_to_sync = True
 
             step = -1
+            profile_step = int(os.environ.get('PROFILE_STEP', -1))
+            profile_epoch = int(os.environ.get('PROFILE_EPOCH', -1))
+            profile_duration = int(os.environ.get('PROFILE_DURATION_MS', 20000))
+            profile_logdir = os.environ.get('PROFILE_LOGDIR', None)
             for step, inputs in enumerate(epoch_iterator):
+                if step == 0 and epoch == 0:
+                    print('input sharding', {k: (v.shape, torch_xla._XLAC._get_xla_sharding_spec(v)) for k, v in inputs.items()})
                 total_batched_samples += 1
 
                 if self.args.include_num_input_tokens_seen:
@@ -1969,6 +1993,10 @@ class Trainer:
 
                 if step % args.gradient_accumulation_steps == 0:
                     self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
+
+                if step == profile_step and epoch == profile_epoch:
+                    trace = lambda: xp.trace('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
+                    Thread(target=trace).start()
 
                 with self.accelerator.accumulate(model):
                     tr_loss_step = self.training_step(model, inputs)
