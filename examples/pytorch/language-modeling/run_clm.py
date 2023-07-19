@@ -35,6 +35,7 @@ import evaluate
 import torch
 from datasets import load_dataset
 
+import torch_xla.debug.profiler as xp
 import transformers
 from transformers import (
     CONFIG_MAPPING,
@@ -156,6 +157,30 @@ class ModelArguments:
             )
         },
     )
+    spmd_grad_chkpt: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Apply gradient checkpointing to the model"
+            )
+        },
+    )
+    spmd_fsdp_sharding: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Will apply XLA SPMD to run FSDP"
+            )
+        },
+    )
+    spmd_batch_sharding: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Will apply XLA SPMD to shard the input along the batch dimension"
+            )
+        },
+    )
 
     def __post_init__(self):
         if self.config_overrides is not None and (self.config_name is not None or self.model_name_or_path is not None):
@@ -264,6 +289,9 @@ def main():
             raise ValueError("`token` and `use_auth_token` are both specified. Please set only the argument `token`.")
         model_args.token = model_args.use_auth_token
 
+    training_args.spmd_batch_sharding = model_args.spmd_batch_sharding or model_args.spmd_fsdp_sharding
+    training_args.spmd_fsdp_sharding = model_args.spmd_fsdp_sharding
+
     # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
     send_example_telemetry("run_clm", model_args, data_args)
@@ -310,6 +338,10 @@ def main():
 
     # Set seed before initializing model.
     set_seed(training_args.seed)
+
+    server = xp.start_server(9012)
+    logger.info('Profiling server started: {str(server)}')
+
 
     # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)
     # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
@@ -458,6 +490,31 @@ def main():
     embedding_size = model.get_input_embeddings().weight.shape[0]
     if len(tokenizer) > embedding_size:
         model.resize_token_embeddings(len(tokenizer))
+
+    import torch_xla.core.xla_model as xm
+    import torch_xla.experimental.xla_sharding as xs
+    import torch_xla.runtime as xr
+    num_devices = xr.global_device_count()
+    device_ids = torch.arange(num_devices)
+    print('Using dtype', model_args.torch_dtype)
+    model = model.to(xm.xla_device(), dtype=getattr(torch, model_args.torch_dtype))
+
+    if model_args.spmd_grad_chkpt:
+        print("Applying gradient checkpointing")
+        from torch_xla.distributed.fsdp import checkpoint_module
+        for i, block in enumerate(model.model.layers):
+            # LLaMA-specific
+            model.model.layers[i] = checkpoint_module(block)
+
+    if model_args.spmd_fsdp_sharding:
+        print('Applying FSDP sharding to all parameters')
+        for name, param in model.named_parameters():
+            # Shard all parameters along a single axis
+            print('> Sharding tensor', name)
+            shape = (num_devices,) + (1,) * (len(param.shape) - 1)
+            mesh = xs.Mesh(device_ids, shape)
+            xs.mark_sharding(param, mesh, range(len(param.shape)))
+
 
     # Preprocessing the datasets.
     # First we tokenize all the texts.
