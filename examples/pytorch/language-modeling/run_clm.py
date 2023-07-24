@@ -514,7 +514,7 @@ def main():
             max_dim = np.argmax(param.shape)
             shape = [1] * len(param.shape)
             shape[max_dim] = num_devices
-            mesh = xs.Mesh(device_ids, tuple(shape))
+            mesh = xs.HybridMesh(ici_mesh_shape=tuple(shape))
             xs.mark_sharding(param, mesh, range(len(param.shape)))
 
 
