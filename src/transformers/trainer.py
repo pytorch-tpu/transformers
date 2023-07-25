@@ -1761,15 +1761,23 @@ class Trainer:
 
     def _xla_sharded_dataloader(self, dataloader):
         if is_torch_tpu_available():
+            import torch_xla.experimental.xla_sharding as xs
+            import torch_xla.runtime as xr
+            import torch_xla.distributed.parallel_loader as pl
+            num_devices = xr.global_device_count()
+            device_ids = np.arange(num_devices)
+
             sharding_spec = None
             if self.args.spmd_batch_sharding:
-                import torch_xla.experimental.xla_sharding as xs
-                import torch_xla.runtime as xr
-                import torch_xla.distributed.parallel_loader as pl
-                num_devices = xr.global_device_count()
-                device_ids = np.arange(num_devices)
                 mesh = xs.Mesh(device_ids, (num_devices, 1))
                 sharding_spec = xs.ShardingSpec(mesh, (0, 1))
+            elif self.args.spmd_tensor_sharding > 0:
+                tensor = self.args.spmd_tensor_sharding
+                fsdp = num_devices // tensor
+                mesh = xs.Mesh(device_ids, (fsdp, tensor))
+                partition_spec = (0, None)
+                sharding_spec = xs.ShardingSpec(mesh, partition_spec)
+
             return pl.MpDeviceLoader(dataloader, self.args.device, input_sharding=sharding_spec, loader_prefetch_size=self.args.train_batch_size, device_prefetch_size=4)
         else:
             return dataloader
@@ -2225,6 +2233,7 @@ class Trainer:
                     self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
                 if step == profile_step and epoch == profile_epoch:
+                    import tempfile
                     trace = lambda: xp.trace('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
                     Thread(target=trace).start()
 

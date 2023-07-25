@@ -181,6 +181,14 @@ class ModelArguments:
             )
         },
     )
+    spmd_tensor_sharding: int = field(
+        default=0,
+        metadata={
+            "help": (
+                "Will apply XLA SPMD to shard the weights along two dimensions (num_devices / spmd_tensor_sharding, spmd_tensor_sharding)"
+            )
+        },
+    )
 
     def __post_init__(self):
         if self.config_overrides is not None and (self.config_name is not None or self.model_name_or_path is not None):
@@ -291,6 +299,7 @@ def main():
 
     training_args.spmd_batch_sharding = model_args.spmd_batch_sharding or model_args.spmd_fsdp_sharding
     training_args.spmd_fsdp_sharding = model_args.spmd_fsdp_sharding
+    training_args.spmd_tensor_sharding = model_args.spmd_tensor_sharding
 
     # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
@@ -519,7 +528,20 @@ def main():
             shape[max_dim] = num_devices
             mesh = xs.HybridMesh(ici_mesh_shape=tuple(shape))
             xs.mark_sharding(param, mesh, range(len(param.shape)))
-
+    elif model_args.spmd_tensor_sharding > 0:
+        print('Applying 2 dimensions sharding to all parameters')
+        for name, param in model.named_parameters():
+            # Shard all parameters along two axis except 1D tensors
+            print('> Sharding tensor', name, param.shape)
+            tensor = model_args.spmd_tensor_sharding
+            fsdp = num_devices // tensor
+            assert fsdp * tensor == num_devices
+            mesh = xs.Mesh(device_ids, (fsdp, tensor))
+            if len(param.shape) == 1:
+                xs.mark_sharding(param, mesh, (1,))
+            else:
+                assert len(param.shape) == 2
+                xs.mark_sharding(param, mesh, range(len(param.shape)))
 
     # Preprocessing the datasets.
     # First we tokenize all the texts.
