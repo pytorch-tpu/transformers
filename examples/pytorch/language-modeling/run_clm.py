@@ -503,7 +503,7 @@ def main():
     import torch_xla.core.xla_model as xm
     import torch_xla.experimental.xla_sharding as xs
     import torch_xla.runtime as xr
-    num_devices = xr.global_device_count()
+    num_devices = xr.global_runtime_device_count()
     device_ids = torch.arange(num_devices)
     print('Using dtype', model_args.torch_dtype)
     model = model.to(xm.xla_device(), dtype=getattr(torch, model_args.torch_dtype))

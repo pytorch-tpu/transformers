@@ -1764,7 +1764,7 @@ class Trainer:
             import torch_xla.experimental.xla_sharding as xs
             import torch_xla.runtime as xr
             import torch_xla.distributed.parallel_loader as pl
-            num_devices = xr.global_device_count()
+            num_devices = xr.global_runtime_device_count()
             device_ids = np.arange(num_devices)
 
             sharding_spec = None
