@@ -269,6 +269,8 @@ class LlamaAttention(nn.Module):
             )
 
         self.attention_dropout = config.attention_dropout
+        # For PyTorch/XLA's SPMD 2D sharding
+        self.spmd_2d_sharding = config.spmd_2d_sharding
         self.hidden_size = config.hidden_size
         self.num_heads = config.num_attention_heads
         self.head_dim = self.hidden_size // self.num_heads
@@ -398,6 +400,22 @@ class LlamaAttention(nn.Module):
 
         if not output_attentions:
             attn_weights = None
+
+        # Apply 2D sharding:
+        # activation (data,, None, model)
+        import torch_xla.core.xla_model as xm
+        import torch_xla.experimental.xla_sharding as xs
+        import torch_xla.runtime as xr
+        import torch_xla
+        num_devices = xr.global_runtime_device_count()
+        device_ids = torch.arange(num_devices)
+        print('> Sharding activations', attn_output.shape)
+        model = self.spmd_2d_sharding
+        data = num_devices // model
+        assert model * data == num_devices
+        data_model_mesh = xs.HybridMesh(ici_mesh_shape=(data, 1, model))
+        xs.mark_sharding(attn_output, data_model_mesh, (0, 1, 2))
+        print(torch_xla._XLAC._get_xla_sharding_spec(attn_output))
 
         return attn_output, attn_weights, past_key_value
 
@@ -919,6 +937,9 @@ class LlamaModel(LlamaPreTrainedModel):
 
     def __init__(self, config: LlamaConfig):
         super().__init__(config)
+        # For PyTorch/XLA's SPMD 2D sharding
+        self.spmd_2d_sharding = config.spmd_2d_sharding
+
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
@@ -992,7 +1013,23 @@ class LlamaModel(LlamaPreTrainedModel):
         causal_mask = self._update_causal_mask(attention_mask, inputs_embeds, cache_position, past_seen_tokens)
 
         # embed positions
+        # Is this the input to the model?
         hidden_states = inputs_embeds
+        # Apply 2D sharding:
+        # input (data,, None, model)
+        import torch_xla.core.xla_model as xm
+        import torch_xla.experimental.xla_sharding as xs
+        import torch_xla.runtime as xr
+        import torch_xla
+        num_devices = xr.global_runtime_device_count()
+        device_ids = torch.arange(num_devices)
+        print('> Sharding hidden_states', hidden_states.shape)
+        model = self.spmd_2d_sharding
+        data = num_devices // model
+        assert model * data == num_devices
+        data_model_mesh = xs.HybridMesh(ici_mesh_shape=(data, 1, model))
+        xs.mark_sharding(hidden_states, data_model_mesh, (0, 1, 2))
+        print(torch_xla._XLAC._get_xla_sharding_spec(hidden_states))
 
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
