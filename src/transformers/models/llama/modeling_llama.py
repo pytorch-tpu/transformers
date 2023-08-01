@@ -401,6 +401,22 @@ class LlamaAttention(nn.Module):
         if not output_attentions:
             attn_weights = None
 
+        # Apply 2D sharding:
+        # activation (data,, None, model)
+        import torch_xla.core.xla_model as xm
+        import torch_xla.experimental.xla_sharding as xs
+        import torch_xla.runtime as xr
+        import torch_xla
+        num_devices = xr.global_runtime_device_count()
+        device_ids = torch.arange(num_devices)
+        print('> Sharding activations', attn_output.shape)
+        model = self.spmd_2d_sharding
+        data = num_devices // model
+        assert model * data == num_devices
+        data_model_mesh = xs.HybridMesh(ici_mesh_shape=(data, 1, model))
+        xs.mark_sharding(attn_output, data_model_mesh, (0, 1, 2))
+        print(torch_xla._XLAC._get_xla_sharding_spec(attn_output))
+
         return attn_output, attn_weights, past_key_value
 
 
@@ -920,6 +936,9 @@ class LlamaModel(LlamaPreTrainedModel):
 
     def __init__(self, config: LlamaConfig):
         super().__init__(config)
+        # For PyTorch/XLA's SPMD 2D sharding
+        self.spmd_2d_sharding = config.spmd_2d_sharding
+
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
