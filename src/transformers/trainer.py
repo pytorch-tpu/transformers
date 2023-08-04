@@ -3295,6 +3295,8 @@ class Trainer:
             self.push_to_hub(commit_message="Model save")
 
     def _save_tpu(self, output_dir: Optional[str] = None):
+        #TODO(jonbolin): Re-enable
+        return
         output_dir = output_dir if output_dir is not None else self.args.output_dir
 
         logger.info(f"Saving model checkpoint to {output_dir}")
@@ -3338,6 +3340,8 @@ class Trainer:
         model.to(self.args.device)
 
     def _save(self, output_dir: Optional[str] = None, state_dict=None):
+        #TODO(jonbolin): Re-enable
+        return
         # If we are executing this function, we are the process zero, so we don't check for that.
         output_dir = output_dir if output_dir is not None else self.args.output_dir
         os.makedirs(output_dir, exist_ok=True)
