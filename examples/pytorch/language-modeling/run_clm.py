@@ -200,6 +200,14 @@ class ModelArguments:
             )
         },
     )
+    spmd_debug: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Will print debug information"
+            )
+        },
+    )
 
     def __post_init__(self):
         if self.config_overrides is not None and (self.config_name is not None or self.model_name_or_path is not None):
@@ -508,6 +516,7 @@ def main():
 
     # Pass the 2d sharding config to the actual model.
     config.spmd_2d_sharding = model_args.spmd_2d_sharding
+    config.spmd_debug = model_args.spmd_debug
     with init_empty_weights():
         if model_args.model_name_or_path:
             torch_dtype = (
