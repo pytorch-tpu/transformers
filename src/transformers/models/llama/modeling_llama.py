@@ -415,8 +415,12 @@ class LlamaAttention(nn.Module):
             model = self.spmd_2d_sharding
             data = num_devices // model
             assert model * data == num_devices
-            data_model_mesh = xs.HybridMesh(ici_mesh_shape=(data, 1, model))
             xs.mark_sharding(attn_output, data_model_mesh, (0, 1, 2))
+            if self.spmd_iota_mesh:
+                mesh = xs.Mesh(device_ids, (data, 1, model))
+            else:
+                mesh = xs.HybridMesh(ici_mesh_shape=(data, 1, model))
+            xs.mark_sharding(attn_output, mesh, (0, 1, 2))
             if self.spmd_debug:
                 print(torch_xla._XLAC._get_xla_sharding_spec(attn_output))
 
@@ -942,6 +946,7 @@ class LlamaModel(LlamaPreTrainedModel):
         # For PyTorch/XLA's SPMD 2D sharding
         self.spmd_2d_sharding = config.spmd_2d_sharding
         self.spmd_debug = config.spmd_debug
+        self.spmd_iota_mesh = config.spmd_iota_mesh
 
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size

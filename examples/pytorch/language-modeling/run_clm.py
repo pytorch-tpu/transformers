@@ -160,6 +160,14 @@ class ModelArguments:
             )
         },
     )
+    spmd_iota_mesh: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Use the iota mesh instead of HybridMesh",
+            )
+        },
+    )
     spmd_grad_chkpt: bool = field(
         default=False,
         metadata={
@@ -525,6 +533,17 @@ def main():
     print('Using dtype', model_args.torch_dtype)
     model = model.to(dtype=getattr(torch, model_args.torch_dtype))
 
+    def get_mesh(ici_mesh_shape, dcn_mesh_shape=None):
+      if model_args.spmd_iota_mesh:
+        if dcn_mesh_shape is not None:
+          assert len(ici_mesh_shape) == len(dcn_mesh_shape)
+          for i in range(len(dcn_mesh_shape)):
+            ici_mesh_shape[i] *= dcn_mesh_shape[i]
+        device_ids = torch.arange(num_devices)
+        return xs.Mesh(device_ids, ici_mesh_shape)
+      else:
+        return xs.HybridMesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape)
+
     # Convert the model from meta to XLA tensors one layer at a time to avoid
     # host-side OOM
     sharded_state_dict = {}
@@ -545,7 +564,7 @@ def main():
           mesh_shape = [1] * len(param.shape)
           mesh_shape[max_dim] = num_devices
           print('> [FSDP] Sharding tensor', name, param.shape, mesh_shape)
-          mesh = xs.HybridMesh(ici_mesh_shape=tuple(mesh_shape))
+          mesh = get_mesh(tuple(mesh_shape))
           xs.mark_sharding(param, mesh, range(len(param.shape)))
       elif model_args.spmd_tensor_sharding > 0:
           # Shard all parameters along two axis except 1D tensors
@@ -553,7 +572,7 @@ def main():
           tensor = model_args.spmd_tensor_sharding
           fsdp = num_devices // tensor
           assert fsdp * tensor == num_devices
-          mesh = xs.Mesh(device_ids, (fsdp, tensor))
+          mesh = get_mesh((fsdp, tensor))
           if len(param.shape) == 1:
               xs.mark_sharding(param, mesh, (1,))
           else:
@@ -570,26 +589,28 @@ def main():
           mod = model_args.spmd_2d_sharding
           data = num_devices // mod
           assert mod * data == num_devices
-          data_model_mesh = xs.HybridMesh(ici_mesh_shape=(data, mod))
-          model_data_mesh = xs.HybridMesh(ici_mesh_shape=(mod, data))
+          mesh = get_mesh((data, mod))
+          data_model = (0, 1)
+          model_data = (1, 0)
 
           # We don't care about layernorm's weights, and
           # LLaMA doesn't use biases.
           if len(param.shape) == 1:
               continue
 
+          assert len(param.shape) == 2
           if 'embed_tokens' in name:
-              xs.mark_sharding(param, model_data_mesh, range(len(param.shape)))
+              xs.mark_sharding(param, mesh, model_data)
           elif 'q_proj' in name or 'k_proj' in name or 'v_proj' in name:
-              xs.mark_sharding(param, data_model_mesh, range(len(param.shape)))
+              xs.mark_sharding(param, mesh, data_model)
           elif 'o_proj' in name:
-              xs.mark_sharding(param, model_data_mesh, range(len(param.shape)))
+              xs.mark_sharding(param, mesh, model_data)
           elif 'gate_proj' in name or 'up_proj' in name:
-              xs.mark_sharding(param, model_data_mesh, range(len(param.shape)))
+              xs.mark_sharding(param, mesh, model_data)
           elif 'down_proj' in name:
-              xs.mark_sharding(param, data_model_mesh, range(len(param.shape)))
+              xs.mark_sharding(param, mesh, data_model)
           elif 'lm_head' in name:  # Not sure what this is but has the same shape as embed_tokens
-              xs.mark_sharding(param, model_data_mesh, range(len(param.shape)))
+              xs.mark_sharding(param, mesh, model_data)
 
           import torch_xla
           print(torch_xla._XLAC._get_xla_sharding_spec(param))
