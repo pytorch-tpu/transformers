@@ -576,11 +576,10 @@ def main():
 
     # Convert the model from meta to XLA tensors one layer at a time to avoid
     # host-side OOM
-    sharded_state_dict = {}
     for name, param in model.state_dict().items():
       # Create an tensor based on the meta tensor
-      sharded_state_dict[name] = torch.randn_like(param, device=xm.xla_device())
-      param = sharded_state_dict[name]
+      param = torch.empty_like(param, device=xm.xla_device())
+      torch.nn.init.uniform_(param, a=-0.05, b=0.05)
       # TODO(jonbolin): Can't load_state_dict when the module consists of meta tensors
       path = re.sub(r'.(\d+)', r'[\1]', name)
       assign = f'model.{path} = torch.nn.Parameter(param)'
@@ -645,7 +644,6 @@ def main():
           import torch_xla
           print(torch_xla._XLAC._get_xla_sharding_spec(param))
 
-    # model.load_state_dict(sharded_state_dict)
     # Move anything remaining to the xla device
     model = model.to(xm.xla_device())
 
