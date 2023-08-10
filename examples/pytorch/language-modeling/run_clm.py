@@ -560,8 +560,9 @@ def main():
     for name, param in model.state_dict().items():
         if model_args.spmd_defer_init:
             # Create an tensor based on the meta tensor
-            param = torch.empty_like(param, device=xm.xla_device())
+            param = torch.empty_like(param, device='cpu')
             torch.nn.init.uniform_(param, a=-0.05, b=0.05)
+            param = param.to(xm.xla_device())
             # TODO(jonbolin): Can't load_state_dict when the module consists of meta tensors
             path = re.sub(r'.(\d+)', r'[\1]', name)
             assign = f'model.{path} = torch.nn.Parameter(param)'
