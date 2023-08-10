@@ -216,6 +216,14 @@ class ModelArguments:
             )
         },
     )
+    spmd_defer_init: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Use defer init",
+            )
+        },
+    )
 
     def __post_init__(self):
         if self.config_overrides is not None and (self.config_name is not None or self.model_name_or_path is not None):
@@ -524,10 +532,18 @@ def main():
         logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
 
     # Pass the 2d sharding config to the actual model.
-    config.spmd_2d_sharding = model_args.spmd_2d_sharding
+    config.spmd_model_axis = model_args.spmd_2d_sharding + model_args.spmd_tensor_sharding
+    if config.spmd_model_axis == 0:
+        config.spmd_model_axis = 1
+    else:
+        assert model_args.spmd_2d_sharding == 0 or model_args.spmd_tensor_sharding == 0
     config.spmd_debug = model_args.spmd_debug
     config.spmd_iota_mesh = model_args.spmd_iota_mesh
-    with init_empty_weights():
+    import contextlib
+    context = contextlib.nullcontext()
+    if model_args.spmd_defer_init:
+        context = init_empty_weights()
+    with context:
         if model_args.model_name_or_path:
             torch_dtype = (
                 model_args.torch_dtype
@@ -561,7 +577,10 @@ def main():
     num_devices = xr.global_runtime_device_count()
     device_ids = torch.arange(num_devices)
     print('Using dtype', model_args.torch_dtype)
-    model = model.to(dtype=getattr(torch, model_args.torch_dtype))
+    if model_args.spmd_defer_init:
+        model = model.to(dtype=getattr(torch, model_args.torch_dtype))
+    else:
+        model = model.to(xm.xla_device(), dtype=getattr(torch, model_args.torch_dtype))
 
     def get_mesh(ici_mesh_shape, dcn_mesh_shape=None):
       if model_args.spmd_iota_mesh:
@@ -577,72 +596,76 @@ def main():
     # Convert the model from meta to XLA tensors one layer at a time to avoid
     # host-side OOM
     for name, param in model.state_dict().items():
-      # Create an tensor based on the meta tensor
-      param = torch.empty_like(param, device=xm.xla_device())
-      torch.nn.init.uniform_(param, a=-0.05, b=0.05)
-      # TODO(jonbolin): Can't load_state_dict when the module consists of meta tensors
-      path = re.sub(r'.(\d+)', r'[\1]', name)
-      assign = f'model.{path} = torch.nn.Parameter(param)'
-      print(f'running "{assign}"')
-      exec(assign)
+        if model_args.spmd_defer_init:
+            # Create an tensor based on the meta tensor
+            param = torch.empty_like(param, device=xm.xla_device())
+            torch.nn.init.uniform_(param, a=-0.05, b=0.05)
+            # TODO(jonbolin): Can't load_state_dict when the module consists of meta tensors
+            path = re.sub(r'.(\d+)', r'[\1]', name)
+            assign = f'model.{path} = torch.nn.Parameter(param)'
+            # print(f'running "{assign}"')
+            exec(assign)
 
-      # Mark sharding based on the model_args
-      if model_args.spmd_fsdp_sharding:
-          import numpy as np
-          max_dim = np.argmax(param.shape)
-          mesh_shape = [1] * len(param.shape)
-          mesh_shape[max_dim] = num_devices
-          print('> [FSDP] Sharding tensor', name, param.shape, mesh_shape)
-          mesh = get_mesh(tuple(mesh_shape))
-          xs.mark_sharding(param, mesh, range(len(param.shape)))
-      elif model_args.spmd_tensor_sharding > 0:
-          # Shard all parameters along two axis except 1D tensors
-          print('> [TP] Sharding tensor', name, param.shape)
-          tensor = model_args.spmd_tensor_sharding
-          fsdp = num_devices // tensor
-          assert fsdp * tensor == num_devices
-          mesh = get_mesh((fsdp, tensor))
-          if len(param.shape) == 1:
-              xs.mark_sharding(param, mesh, (1,))
-          else:
-              assert len(param.shape) == 2
-              xs.mark_sharding(param, mesh, range(len(param.shape)))
-      elif model_args.spmd_2d_sharding > 0:
-          # Apply 2D sharding:
-          # embedding (model, data)
-          # attn QKV (data, model)
-          # attn O (model, data)
-          # mlp gate, up (model, data)
-          # mlp down (data, model)
-          print('> [2D] Sharding tensor', name, param.shape)
-          mod = model_args.spmd_2d_sharding
-          data = num_devices // mod
-          assert mod * data == num_devices
-          mesh = get_mesh((data, mod))
-          data_model = (0, 1)
-          model_data = (1, 0)
+        # Mark sharding based on the model_args
+        if model_args.spmd_fsdp_sharding:
+            import numpy as np
+            mesh_shape = (num_devices,) + (1,) * (len(param.shape) - 1)
+            print('> [FSDP] Sharding tensor', name, param.shape)
+            mesh = get_mesh(tuple(mesh_shape))
+            # We don't care about layernorm's weights, and
+            # LLaMA doesn't use biases.
+            if len(param.shape) == 1:
+                continue
+            assert len(param.shape) == 2
+            xs.mark_sharding(param, mesh, range(len(param.shape)))
+        elif model_args.spmd_tensor_sharding > 0:
+            # Shard all parameters along two axis except 1D tensors
+            print('> [TP] Sharding tensor', name, param.shape)
+            tensor = model_args.spmd_tensor_sharding
+            fsdp = num_devices // tensor
+            assert fsdp * tensor == num_devices
+            mesh = get_mesh((fsdp, tensor))
+            # We don't care about layernorm's weights, and
+            # LLaMA doesn't use biases.
+            if len(param.shape) == 1:
+                continue
+            assert len(param.shape) == 2
+            xs.mark_sharding(param, mesh, range(len(param.shape)))
+        elif model_args.spmd_2d_sharding > 0:
+            # Apply 2D sharding:
+            # embedding (model, data)
+            # attn QKV (data, model)
+            # attn O (model, data)
+            # mlp gate, up (model, data)
+            # mlp down (data, model)
+            print('> [2D] Sharding tensor', name, param.shape)
+            mod = model_args.spmd_2d_sharding
+            data = num_devices // mod
+            assert mod * data == num_devices
+            mesh = get_mesh((data, mod))
+            data_model = (0, 1)
+            model_data = (1, 0)
 
-          # We don't care about layernorm's weights, and
-          # LLaMA doesn't use biases.
-          if len(param.shape) == 1:
-              continue
+            # We don't care about layernorm's weights, and
+            # LLaMA doesn't use biases.
+            if len(param.shape) == 1:
+                continue
 
-          assert len(param.shape) == 2
-          if 'embed_tokens' in name:
-              xs.mark_sharding(param, mesh, model_data)
-          elif 'q_proj' in name or 'k_proj' in name or 'v_proj' in name:
-              xs.mark_sharding(param, mesh, data_model)
-          elif 'o_proj' in name:
-              xs.mark_sharding(param, mesh, model_data)
-          elif 'gate_proj' in name or 'up_proj' in name:
-              xs.mark_sharding(param, mesh, model_data)
-          elif 'down_proj' in name:
-              xs.mark_sharding(param, mesh, data_model)
-          elif 'lm_head' in name:  # Not sure what this is but has the same shape as embed_tokens
-              xs.mark_sharding(param, mesh, model_data)
+            if 'embed_tokens' in name:
+                xs.mark_sharding(param, mesh, model_data)
+            elif 'q_proj' in name or 'k_proj' in name or 'v_proj' in name:
+                xs.mark_sharding(param, mesh, data_model)
+            elif 'o_proj' in name:
+                xs.mark_sharding(param, mesh, model_data)
+            elif 'gate_proj' in name or 'up_proj' in name:
+                xs.mark_sharding(param, mesh, model_data)
+            elif 'down_proj' in name:
+                xs.mark_sharding(param, mesh, data_model)
+            elif 'lm_head' in name:  # Not sure what this is but has the same shape as embed_tokens
+                xs.mark_sharding(param, mesh, model_data)
 
-          import torch_xla
-          print(torch_xla._XLAC._get_xla_sharding_spec(param))
+        import torch_xla
+        print(torch_xla._XLAC._get_xla_sharding_spec(param))
 
     # Move anything remaining to the xla device
     model = model.to(xm.xla_device())
