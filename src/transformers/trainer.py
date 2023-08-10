@@ -1762,33 +1762,8 @@ class Trainer:
     def _xla_sharded_dataloader(self, dataloader):
         if is_torch_tpu_available():
             import torch_xla.experimental.xla_sharding as xs
-            import torch_xla.runtime as xr
             import torch_xla.distributed.parallel_loader as pl
-            num_devices = xr.global_runtime_device_count()
-            device_ids = np.arange(num_devices)
-
-            def get_mesh(ici_mesh_shape, dcn_mesh_shape=None):
-              if self.args.spmd_iota_mesh:
-                if dcn_mesh_shape is not None:
-                  assert len(ici_mesh_shape) == len(dcn_mesh_shape)
-                  for i in range(len(dcn_mesh_shape)):
-                    ici_mesh_shape[i] *= dcn_mesh_shape[i]
-                return xs.Mesh(device_ids, ici_mesh_shape)
-              else:
-                return xs.HybridMesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape)
-
-            sharding_spec = None
-            if self.args.spmd_batch_sharding:
-                mesh = get_mesh((num_devices, 1))
-                sharding_spec = xs.ShardingSpec(mesh, (0, 1))
-            elif self.args.spmd_tensor_sharding > 0 or self.args.spmd_2d_sharding > 0:
-                assert self.args.spmd_tensor_sharding == 0 or self.args.spmd_2d_sharding == 0
-                tensor = self.args.spmd_tensor_sharding + self.args.spmd_2d_sharding
-                fsdp = num_devices // tensor
-                mesh = get_mesh((fsdp, tensor))
-                partition_spec = (0, None)
-                sharding_spec = xs.ShardingSpec(mesh, partition_spec)
-
+            sharding_spec = xs.ShardingSpec(self.args.spmd_mesh, (('dcn', 'data'), None))
             return pl.MpDeviceLoader(dataloader, self.args.device, input_sharding=sharding_spec, loader_prefetch_size=self.args.train_batch_size, device_prefetch_size=4)
         else:
             return dataloader
@@ -2335,6 +2310,7 @@ class Trainer:
                     if is_torch_xla_available():
                         xm.mark_step()
                     break
+
             if step < 0:
                 logger.warning(
                     "There seems to be not a single sample in your epoch_iterator, stopping training at step"
