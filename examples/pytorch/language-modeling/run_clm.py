@@ -595,7 +595,7 @@ def main():
 
     # Convert the model from meta to XLA tensors one layer at a time to avoid
     # host-side OOM
-    for name, param in model.state_dict().items():
+    for name, param in model.named_parameters():
         if model_args.spmd_defer_init:
             # Create an tensor based on the meta tensor
             param = torch.empty_like(param, device='cpu')

@@ -187,6 +187,7 @@ def rotate_half(x):
     return torch.cat((-x2, x1), dim=-1)
 
 
+<<<<<<< HEAD
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """Applies Rotary Position Embedding to the query and key tensors.
 
@@ -209,6 +210,13 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
+=======
+# Copied from transformers.models.gpt_neox.modeling_gpt_neox.apply_rotary_pos_emb
+@xp.trace_me("rotary_emb")
+def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
+    cos = cos[position_ids].unsqueeze(1)  # [seq_len, dim] -> [batch_size, 1, seq_len, head_dim]
+    sin = sin[position_ids].unsqueeze(1)
+>>>>>>> b83852584 (Re-enable rotary embedding)
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
