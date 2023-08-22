@@ -187,7 +187,7 @@ def rotate_half(x):
     return torch.cat((-x2, x1), dim=-1)
 
 
-<<<<<<< HEAD
+@xp.trace_me("rotary_emb")
 def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """Applies Rotary Position Embedding to the query and key tensors.
 
@@ -210,13 +210,6 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids=None, unsqueeze_dim=1):
     """
     cos = cos.unsqueeze(unsqueeze_dim)
     sin = sin.unsqueeze(unsqueeze_dim)
-=======
-# Copied from transformers.models.gpt_neox.modeling_gpt_neox.apply_rotary_pos_emb
-@xp.trace_me("rotary_emb")
-def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
-    cos = cos[position_ids].unsqueeze(1)  # [seq_len, dim] -> [batch_size, 1, seq_len, head_dim]
-    sin = sin[position_ids].unsqueeze(1)
->>>>>>> b83852584 (Re-enable rotary embedding)
     q_embed = (q * cos) + (rotate_half(q) * sin)
     k_embed = (k * cos) + (rotate_half(k) * sin)
     return q_embed, k_embed
@@ -462,7 +455,12 @@ class LlamaAttention(nn.Module):
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+        # query_states Batch Num_head Seq Head_dim
+        # key_states   Batch Num_head Kv_seq Head_dim
+        #attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+        assert query_states.shape == torch.Size((bsz, self.num_heads, q_len, self.head_dim)), f'incorrect query_states shape: {query_states.shape}'
+        assert key_states.shape == torch.Size((bsz, self.num_heads, kv_seq_len, self.head_dim)), f'incorrect key_states_states shape: {key_states.shape}'
+        attn_weights = torch.einsum('bnsh,bnkh->bnsk', query_states, key_states) / math.sqrt(self.head_dim)
         # Apply 2D sharding:
         # attn_weights (batch, num_attention_heads, length, length)
         # mesh (data, model, none, none)
@@ -478,9 +476,13 @@ class LlamaAttention(nn.Module):
             attn_weights = attn_weights + causal_mask
 
         # upcast attention to fp32
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         attn_weights = nn.functional.dropout(attn_weights, p=self.attention_dropout, training=self.training)
-        attn_output = torch.matmul(attn_weights, value_states)
+        # attn_weights Batch Num_head Seq Kv_seq
+        # value_states Batch Num_head Seq Head_dim
+        # attn_output = torch.matmul(attn_weights, value_states)
+        assert attn_weights.shape == torch.Size((bsz, self.num_heads, q_len, kv_seq_len)), f'incorrect atten_weight shape: {attn_weights.shape}'
+        assert value_states.shape == torch.Size((bsz, self.num_heads, kv_seq_len, self.head_dim)), f'incorrect value_states shape: {value_states.shape}'
+        attn_output = torch.einsum('bnsk,bnkh->bnsh', attn_weights, value_states)
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
             raise ValueError(
