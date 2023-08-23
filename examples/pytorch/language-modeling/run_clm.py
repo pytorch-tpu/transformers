@@ -637,9 +637,9 @@ def main():
     if model_args.spmd_grad_chkpt:
         print("Applying gradient checkpointing")
         from torch_xla.distributed.fsdp import checkpoint_module
-        for i, block in enumerate(model.model.layers):
+        for i, block in enumerate(model.transformer.h):
             # LLaMA-specific
-            model.model.layers[i] = checkpoint_module(block)
+            model.transformer.h[i] = checkpoint_module(block)
 
     # Preprocessing the datasets.
     # First we tokenize all the texts.
