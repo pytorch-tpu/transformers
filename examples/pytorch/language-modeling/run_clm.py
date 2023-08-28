@@ -555,6 +555,10 @@ def main():
       else:
         return xs.HybridMesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape)
 
+    # Replace the linear layer
+    from torch_xla.distributed.fsdp.utils import apply_xla_patch_to_nn_linear
+    model = apply_xla_patch_to_nn_linear(model, xs.xla_patched_nn_linear_forward)
+
     # Convert the model from meta to XLA tensors one layer at a time to avoid
     # host-side OOM
     for name, param in model.named_parameters():
