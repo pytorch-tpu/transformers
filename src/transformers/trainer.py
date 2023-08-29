@@ -879,7 +879,8 @@ class Trainer:
             dataloader_params["worker_init_fn"] = seed_worker
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
 
-        # TODO(jonbolin): Disabling Accelerate on the dataloader (`Unknown device SPMD:0`)
+        # TODO(jonbolin): Disabling Accelerate on the dataloader. Accelerate does not
+        # currently support SPMD-mode
         return DataLoader(train_dataset, **dataloader_params)
 
     def _get_eval_sampler(self, eval_dataset: Dataset) -> Optional[torch.utils.data.Sampler]:

@@ -24,19 +24,19 @@ https://huggingface.co/models?filter=text-generation
 import logging
 import math
 import os
-import re
 import sys
 import warnings
 from dataclasses import dataclass, field
 from itertools import chain
 from typing import Optional
+import numpy as np
+import contextlib
 
 import datasets
 import evaluate
 import torch
 from datasets import load_dataset
 
-import torch_xla.debug.profiler as xp
 import transformers
 from transformers import (
     CONFIG_MAPPING,
@@ -55,8 +55,14 @@ from transformers.testing_utils import CaptureLogger
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
+from accelerate import init_empty_weights
 
+import torch_xla
+import torch_xla.debug.profiler as xp
 import torch_xla.runtime as xr
+
+# Enable SPMD mode execution
+xr.use_spmd()
 
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
@@ -160,19 +166,19 @@ class ModelArguments:
             )
         },
     )
-    spmd_iota_mesh: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "Use the iota mesh instead of HybridMesh",
-            )
-        },
-    )
     spmd_dcn_parallelism: int = field(
         default=1,
         metadata={
             "help": (
                 "Number of slices to run in data parallel"
+            )
+        },
+    )
+    spmd_defer_init: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Use defer init to avoid host-side OOM",
             )
         },
     )
@@ -189,22 +195,6 @@ class ModelArguments:
         metadata={
             "help": (
                 "Will apply XLA SPMD to run FSDP"
-            )
-        },
-    )
-    spmd_batch_sharding: bool = field(
-        default=False,
-        metadata={
-            "help": (
-                "Will apply XLA SPMD to shard the input along the batch dimension"
-            )
-        },
-    )
-    spmd_tensor_sharding: int = field(
-        default=0,
-        metadata={
-            "help": (
-                "Will apply XLA SPMD to shard the weights along two dimensions (num_devices / spmd_tensor_sharding, spmd_tensor_sharding)"
             )
         },
     )
@@ -534,56 +524,59 @@ def main():
 
     import torch_xla.core.xla_model as xm
     import torch_xla.experimental.xla_sharding as xs
-    import torch_xla.runtime as xr
-    num_devices = xr.global_runtime_device_count()
-    device_ids = torch.arange(num_devices)
-    def get_mesh(ici_mesh_shape, dcn_mesh_shape=None, axis_names=None):
-      if model_args.spmd_iota_mesh:
-        mesh_shape = ici_mesh_shape
-        if dcn_mesh_shape is not None:
-          assert len(ici_mesh_shape) == len(dcn_mesh_shape)
-          mesh_shape = tuple(i * d for i, d in zip(ici_mesh_shape, dcn_mesh_shape))
-        return xs.Mesh(device_ids, mesh_shape, axis_names)
-      else:
-        return xs.HybridMesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape, axis_names=axis_names)
-
 
     # Pass the sharding parameters to the model config
     config.spmd_debug = model_args.spmd_debug
     config.spmd_fsdp_sharding = model_args.spmd_fsdp_sharding
-    assert model_args.spmd_2d_sharding == 0 or model_args.spmd_tensor_sharding == 0, 'Only one of --spmd_2d_sharding or --spmd_tensor_sharding can be specified'
-    model_axis = max(model_args.spmd_2d_sharding + model_args.spmd_tensor_sharding, 1)
-    dcn_axis = model_args.spmd_dcn_parallelism
-    data_axis = num_devices // model_axis // dcn_axis
 
     # Place DCN on an independent axis in the mesh. Model parameters should be
     # replicated along the DCN axis, and inputs and activations should have
     # the batch dimension sharded along the combined DCN and data axes.
+    num_devices = xr.global_runtime_device_count()
+    model_axis = max(model_args.spmd_2d_sharding, 1)
+    dcn_axis = model_args.spmd_dcn_parallelism
+    data_axis = num_devices // model_axis // dcn_axis
     ici_mesh_shape = (1, data_axis, model_axis)
     dcn_mesh_shape = (dcn_axis, 1, 1)
-    config.spmd_mesh = get_mesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape, axis_names=('dcn', 'data', 'model'))
-    training_args.spmd_mesh = config.spmd_mesh
+    spmd_mesh = xs.HybridMesh(ici_mesh_shape=ici_mesh_shape,
+                              dcn_mesh_shape=dcn_mesh_shape,
+                              axis_names=('dcn', 'data', 'model'))
 
-    if model_args.model_name_or_path:
-        torch_dtype = (
-            model_args.torch_dtype
-            if model_args.torch_dtype in ["auto", None]
-            else getattr(torch, model_args.torch_dtype)
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            model_args.model_name_or_path,
-            from_tf=bool(".ckpt" in model_args.model_name_or_path),
-            config=config,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            use_auth_token=True if model_args.use_auth_token else None,
-            torch_dtype=torch_dtype,
-            low_cpu_mem_usage=model_args.low_cpu_mem_usage,
-        )
-    else:
-        model = AutoModelForCausalLM.from_config(config)
-        n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
-        logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
+    # Update training args with relevant SPMD config
+    training_args.spmd_mesh = spmd_mesh
+    training_args.spmd_fsdp_sharding = model_args.spmd_fsdp_sharding
+
+    # Temporarily add the SPMD mesh to the model config for model initialization
+    config.spmd_mesh = spmd_mesh
+
+    # Initialize the model on the meta device to avoid host-side OOM.
+    context = contextlib.nullcontext()
+    if model_args.spmd_defer_init:
+        context = init_empty_weights()
+    with context:
+        if model_args.model_name_or_path:
+            torch_dtype = (
+                model_args.torch_dtype
+                if model_args.torch_dtype in ["auto", None]
+                else getattr(torch, model_args.torch_dtype)
+            )
+            model = AutoModelForCausalLM.from_pretrained(
+                model_args.model_name_or_path,
+                from_tf=bool(".ckpt" in model_args.model_name_or_path),
+                config=config,
+                cache_dir=model_args.cache_dir,
+                revision=model_args.model_revision,
+                use_auth_token=True if model_args.use_auth_token else None,
+                torch_dtype=torch_dtype,
+                low_cpu_mem_usage=model_args.low_cpu_mem_usage,
+            )
+        else:
+            model = AutoModelForCausalLM.from_config(config)
+            n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
+            logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
+
+    # TODO(jonbolin): Removing the SPMD mesh from the config since it is not serializable.
+    del config.spmd_mesh
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -591,16 +584,70 @@ def main():
     if len(tokenizer) > embedding_size:
         model.resize_token_embeddings(len(tokenizer))
 
-    print('Using dtype', model_args.torch_dtype)
-    model = model.to(xm.xla_device(), dtype=getattr(torch, model_args.torch_dtype))
-
     # Replace the linear layer
     from torch_xla.distributed.fsdp.utils import apply_xla_patch_to_nn_linear
     model = apply_xla_patch_to_nn_linear(model, xs.xla_patched_nn_linear_forward)
 
+    # Set the dtype, and move to the XLA device when parameters are already initialized
+    if model_args.spmd_defer_init:
+        model = model.to(dtype=getattr(torch, model_args.torch_dtype))
+    else:
+        model = model.to(xm.xla_device(), dtype=getattr(torch, model_args.torch_dtype))
+
+    # Shard each parameter in the model based on the sharding strategy provided.
     for name, param in model.named_parameters():
-        import torch_xla
-        print(name, torch_xla._XLAC._get_xla_sharding_spec(param))
+        if model_args.spmd_defer_init:
+            with torch.no_grad():
+                param = torch.empty_like(param, device='cpu')
+                # TODO(jonbolin): Currently, deferred initialization ignores any custom
+                # weight initialization in the model.
+                torch.nn.init.uniform_(param, a=-0.05, b=0.05)
+                param = torch.nn.Parameter(param.to(xm.xla_device()))
+                # Find the corresponding module
+                path = name.split('.')
+                module = model
+                for module_name in path[:-1]:
+                   module = dict(module.named_children())[module_name]
+                # Replace the meta tensor parameter with the initialized XLA tensor
+                module.register_parameter(path[-1], param)
+
+        if model_args.spmd_fsdp_sharding:
+            print('> [FSDP] Sharding tensor', name, param.shape, param.dtype)
+            # We don't care about layernorm's weights, and
+            # LLaMA doesn't use biases.
+            if len(param.shape) == 1:
+                continue
+            assert len(param.shape) == 2
+
+            # Shard the largest dimension
+            if param.shape[0] > param.shape[1]:
+                partition_spec = ('data', None)
+            else:
+                partition_spec = (None, 'data')
+            xs.mark_sharding(param, spmd_mesh, partition_spec)
+        elif model_args.spmd_2d_sharding > 0:
+            # Apply 2D sharding:
+            print('> [2D] Sharding tensor', name, param.shape)
+
+            # We don't care about layernorm's weights, and
+            # LLaMA doesn't use biases.
+            if len(param.shape) == 1:
+                continue
+
+            if 'embed_tokens' in name:
+                xs.mark_sharding(param, spmd_mesh, ('model', 'data'))
+            elif 'q_proj' in name or 'k_proj' in name or 'v_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('data', 'model'))
+            elif 'o_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('model', 'data'))
+            elif 'gate_proj' in name or 'up_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('model', 'data'))
+            elif 'down_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('data', 'model'))
+            elif 'lm_head' in name:
+                xs.mark_sharding(param, spmd_mesh, ('model', 'data'))
+
+        print(f'{name} {torch_xla._XLAC._get_xla_sharding_spec(param)}')
 
     if model_args.spmd_grad_chkpt:
         print("Applying gradient checkpointing")
