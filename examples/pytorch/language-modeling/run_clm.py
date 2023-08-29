@@ -563,6 +563,10 @@ def main():
     model_axis = max(model_args.spmd_2d_sharding + model_args.spmd_tensor_sharding, 1)
     dcn_axis = model_args.spmd_dcn_parallelism
     data_axis = num_devices // model_axis // dcn_axis
+
+    # Place DCN on an independent axis in the mesh. Model parameters should be
+    # replicated along the DCN axis, and inputs and activations should have
+    # the batch dimension sharded along the combined DCN and data axes.
     ici_mesh_shape = (1, data_axis, model_axis)
     dcn_mesh_shape = (dcn_axis, 1, 1)
     config.spmd_mesh = get_mesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape, axis_names=('dcn', 'data', 'model'))
