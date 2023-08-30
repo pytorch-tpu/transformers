@@ -48,6 +48,10 @@ from ...utils import (
 from ...utils.model_parallel_utils import assert_device_map, get_device_map
 from .configuration_gpt2 import GPT2Config
 
+import torch_xla.core.xla_model as xm
+import torch_xla.experimental.xla_sharding as xs
+import torch_xla.runtime as xr
+
 
 logger = logging.get_logger(__name__)
 
@@ -63,6 +67,27 @@ GPT2_PRETRAINED_MODEL_ARCHIVE_LIST = [
     # See all GPT-2 models at https://huggingface.co/models?filter=gpt2
 ]
 
+
+# For PyTorch/XLA's SPMD 2D sharding
+def init_spmd(model, config):
+    num_devices = xr.global_runtime_device_count()
+    model.spmd_debug = config.spmd_debug
+    model.spmd_model_axis = config.spmd_model_axis
+    model.spmd_data_axis = num_devices // model.spmd_model_axis
+    assert model.spmd_data_axis * model.spmd_model_axis == num_devices
+    model.spmd_iota_mesh = config.spmd_iota_mesh
+
+def get_mesh(spmd_iota_mesh, ici_mesh_shape, dcn_mesh_shape=None):
+    if spmd_iota_mesh:
+        if dcn_mesh_shape is not None:
+            assert len(ici_mesh_shape) == len(dcn_mesh_shape)
+            for i in range(len(dcn_mesh_shape)):
+                ici_mesh_shape[i] *= dcn_mesh_shape[i]
+        num_devices = xr.global_runtime_device_count()
+        device_ids = torch.arange(num_devices)
+        return xs.Mesh(device_ids, ici_mesh_shape)
+    else:
+        return xs.HybridMesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape)
 
 def load_tf_weights_in_gpt2(model, config, gpt2_checkpoint_path):
     """Load tf checkpoints in a pytorch model"""
@@ -683,6 +708,8 @@ class GPT2Model(GPT2PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+        init_spmd(self, config)
+
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
         # Check validity of device_map
@@ -795,6 +822,10 @@ class GPT2Model(GPT2PreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(past_length, input_shape[-1] + past_length, dtype=torch.long, device=device)
             position_ids = position_ids.unsqueeze(0)
+
+        # Apply activation sharding:
+        # TBD
+        data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
 
         # GPT2Attention mask.
         if attention_mask is not None:
@@ -956,6 +987,8 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
+        init_spmd(self, config)
+
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
         warnings.warn(
@@ -1094,6 +1127,11 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             hidden_states = hidden_states.to(self.lm_head.weight.device)
 
         lm_logits = self.lm_head(hidden_states)
+
+        ici_mesh_shape = (self.spmd_data_axis, 1, self.spmd_model_axis)
+        dcn_mesh_shape = (self.spmd_dcn_parallelism, 1, 1)
+        mesh = get_mesh(self.spmd_iota_mesh, ici_mesh_shape, dcn_mesh_shape)
+        xs.mark_sharding(lm_logits, mesh, (0, 1, 2))
 
         loss = None
         if labels is not None:
