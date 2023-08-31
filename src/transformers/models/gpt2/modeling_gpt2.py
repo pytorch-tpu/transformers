@@ -342,11 +342,11 @@ class GPT2Attention(nn.Module):
         key = self._split_heads(key, self.num_heads, self.head_dim)
         value = self._split_heads(value, self.num_heads, self.head_dim)
 
-        # Apply 2D sharding
+        # Apply activation sharding
         data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
-        xs.mark_sharding(query, data_model_mesh, range(len(query.shape)))
-        xs.mark_sharding(key, data_model_mesh, range(len(key.shape)))
-        xs.mark_sharding(value, data_model_mesh, range(len(value.shape)))
+        xs.mark_sharding(query, data_model_mesh, range(min(3, len(query.shape))))
+        xs.mark_sharding(key, data_model_mesh, range(min(3, len(key.shape))))
+        xs.mark_sharding(value, data_model_mesh, range(min(3, len(value.shape))))
 
         if layer_past is not None:
             past_key, past_value = layer_past
@@ -362,13 +362,13 @@ class GPT2Attention(nn.Module):
             attn_output, attn_weights = self._upcast_and_reordered_attn(query, key, value, attention_mask, head_mask)
         else:
             attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
-        xs.mark_sharding(attn_weights, data_model_mesh, range(len(attn_weights.shape)))
+        xs.mark_sharding(attn_weights, data_model_mesh, range(min(3, len(attn_weights.shape))))
 
         attn_output = self._merge_heads(attn_output, self.num_heads, self.head_dim)
         attn_output = self.c_proj(attn_output)
         attn_output = self.resid_dropout(attn_output)
 
-        xs.mark_sharding(attn_output, data_model_mesh, range(len(attn_output.shape)))
+        xs.mark_sharding(attn_output, data_model_mesh, range(min(3, len(attn_output.shape))))
 
         outputs = (attn_output, present)
         if output_attentions:
