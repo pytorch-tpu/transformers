@@ -189,6 +189,8 @@ class GPT2Attention(nn.Module):
 
         self.pruned_heads = set()
 
+        init_spmd(self, config)
+
     def prune_heads(self, heads):
         if len(heads) == 0:
             return
@@ -340,6 +342,12 @@ class GPT2Attention(nn.Module):
         key = self._split_heads(key, self.num_heads, self.head_dim)
         value = self._split_heads(value, self.num_heads, self.head_dim)
 
+        # Apply 2D sharding
+        data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
+        xs.mark_sharding(query, data_model_mesh, range(len(query.shape)))
+        xs.mark_sharding(key, data_model_mesh, range(len(key.shape)))
+        xs.mark_sharding(value, data_model_mesh, range(len(value.shape)))
+
         if layer_past is not None:
             past_key, past_value = layer_past
             key = torch.cat((past_key, key), dim=-2)
@@ -354,10 +362,13 @@ class GPT2Attention(nn.Module):
             attn_output, attn_weights = self._upcast_and_reordered_attn(query, key, value, attention_mask, head_mask)
         else:
             attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
+        xs.mark_sharding(attn_weights, data_model_mesh, range(len(attn_weights.shape)))
 
         attn_output = self._merge_heads(attn_output, self.num_heads, self.head_dim)
         attn_output = self.c_proj(attn_output)
         attn_output = self.resid_dropout(attn_output)
+
+        xs.mark_sharding(attn_output, data_model_mesh, range(len(attn_output.shape)))
 
         outputs = (attn_output, present)
         if output_attentions:
@@ -375,10 +386,17 @@ class GPT2MLP(nn.Module):
         self.act = ACT2FN[config.activation_function]
         self.dropout = nn.Dropout(config.resid_pdrop)
 
+        init_spmd(self, config)
+
     def forward(self, hidden_states: Optional[Tuple[torch.FloatTensor]]) -> torch.FloatTensor:
+        data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
+
         hidden_states = self.c_fc(hidden_states)
+        xs.mark_sharding(hidden_states, data_model_mesh, range(len(hidden_states.shape)))
         hidden_states = self.act(hidden_states)
+        xs.mark_sharding(hidden_states, data_model_mesh, range(len(hidden_states.shape)))
         hidden_states = self.c_proj(hidden_states)
+        xs.mark_sharding(hidden_states, data_model_mesh, range(len(hidden_states.shape)))
         hidden_states = self.dropout(hidden_states)
         return hidden_states
 
@@ -822,10 +840,6 @@ class GPT2Model(GPT2PreTrainedModel):
         if position_ids is None:
             position_ids = torch.arange(past_length, input_shape[-1] + past_length, dtype=torch.long, device=device)
             position_ids = position_ids.unsqueeze(0)
-
-        # Apply activation sharding:
-        # TBD
-        data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
 
         # GPT2Attention mask.
         if attention_mask is not None:
