@@ -207,7 +207,10 @@ class GPT2Attention(nn.Module):
         self.pruned_heads = self.pruned_heads.union(heads)
 
     def _attn(self, query, key, value, attention_mask=None, head_mask=None):
-        attn_weights = torch.matmul(query, key.transpose(-1, -2))
+        # query_states Batch Num_head Seq Head_dim
+        # key_states   Batch Num_head Kv_seq Head_dim
+        #attn_weights = torch.matmul(query, key.transpose(-1, -2))
+        attn_weights = torch.einsum('ijkl,ijhl->ijkh')
 
         if self.scale_attn_weights:
             attn_weights = attn_weights / torch.full(
@@ -242,7 +245,10 @@ class GPT2Attention(nn.Module):
         if head_mask is not None:
             attn_weights = attn_weights * head_mask
 
-        attn_output = torch.matmul(attn_weights, value)
+        # attn_weights Batch Num_head Seq Kv_seq
+        # value_states Batch Num_head Seq Head_dim
+        #attn_output = torch.matmul(attn_weights, value)
+        attn_output = torch.einsum('ijkl,ijlh->ijkh', attn_weights, value)
 
         return attn_output, attn_weights
 
@@ -294,7 +300,10 @@ class GPT2Attention(nn.Module):
         if head_mask is not None:
             attn_weights = attn_weights * head_mask
 
-        attn_output = torch.matmul(attn_weights, value)
+        # attn_weights Batch Num_head Seq Kv_seq
+        # value_states Batch Num_head Seq Head_dim
+        #attn_output = torch.matmul(attn_weights, value)
+        attn_output = torch.einsum('ijkl,ijlh->ijkh', attn_weights, value)
 
         return attn_output, attn_weights
 
@@ -344,9 +353,9 @@ class GPT2Attention(nn.Module):
 
         # Apply activation sharding
         data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
-        xs.mark_sharding(query, data_model_mesh, range(min(3, len(query.shape))))
-        xs.mark_sharding(key, data_model_mesh, range(min(3, len(key.shape))))
-        xs.mark_sharding(value, data_model_mesh, range(min(3, len(value.shape))))
+        xs.mark_sharding(query, data_model_mesh, (0,1,2,None))
+        xs.mark_sharding(key, data_model_mesh, (0,1,2,None))
+        xs.mark_sharding(value, data_model_mesh, (0,1,2,None))
 
         if layer_past is not None:
             past_key, past_value = layer_past
@@ -1143,7 +1152,8 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
         lm_logits = self.lm_head(hidden_states)
 
         ici_mesh_shape = (self.spmd_data_axis, 1, self.spmd_model_axis)
-        dcn_mesh_shape = (self.spmd_dcn_parallelism, 1, 1)
+        spmd_dcn_parallelism = 1
+        dcn_mesh_shape = (spmd_dcn_parallelism, 1, 1)  # self.spmd_dcn_parallelism
         mesh = get_mesh(self.spmd_iota_mesh, ici_mesh_shape, dcn_mesh_shape)
         xs.mark_sharding(lm_logits, mesh, (0, 1, 2))
 
