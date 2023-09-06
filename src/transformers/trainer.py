@@ -363,12 +363,6 @@ class Trainer:
             args = TrainingArguments(output_dir=output_dir)
         self.args = args
 
-        self.args.spmd_batch_sharding = True
-        self.args.spmd_fsdp_sharding = True
-        self.args.spmd_tensor_sharding = False
-        self.args.spmd_2d_sharding = False
-        self.args.spmd_iota_mesh = True
-
         # Seed must be set before instantiating the model when using model
         enable_full_determinism(self.args.seed) if self.args.full_determinism else set_seed(self.args.seed)
         self.hp_name = None
