@@ -210,7 +210,11 @@ class GPT2Attention(nn.Module):
         # query_states Batch Num_head Seq Head_dim
         # key_states   Batch Num_head Kv_seq Head_dim
         #attn_weights = torch.matmul(query, key.transpose(-1, -2))
-        attn_weights = torch.einsum('ijkl,ijhl->ijkh')
+        attn_weights = torch.einsum('ijkl,ijhl->ijkh', query, key)
+
+        # attn weight (batch, head, seq_length, seq_length)
+        data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
+        xs.mark_sharding(attn_weights, data_model_mesh, (0,2,None,None))
 
         if self.scale_attn_weights:
             attn_weights = attn_weights / torch.full(
@@ -233,9 +237,11 @@ class GPT2Attention(nn.Module):
 
         if attention_mask is not None:
             # Apply the attention mask
+            xs.mark_sharding(attention_mask, data_model_mesh, (0,2,None,None))
             attn_weights = attn_weights + attention_mask
 
         attn_weights = nn.functional.softmax(attn_weights, dim=-1)
+        xs.mark_sharding(attn_weights, data_model_mesh, (0,2,None,None))
 
         # Downcast (if necessary) back to V's dtype (if in mixed-precision) -- No-Op otherwise
         attn_weights = attn_weights.type(value.dtype)
@@ -352,10 +358,12 @@ class GPT2Attention(nn.Module):
         value = self._split_heads(value, self.num_heads, self.head_dim)
 
         # Apply activation sharding, [data, None, model]
+        # query, key, value (batch, head, seq_length, head_features),
+        # as we are not using grouped query.
         data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
-        xs.mark_sharding(query, data_model_mesh, (0,1,2,None))
-        xs.mark_sharding(key, data_model_mesh, (0,1,2,None))
-        xs.mark_sharding(value, data_model_mesh, (0,1,2,None))
+        xs.mark_sharding(query, data_model_mesh, (0,2,None,None))
+        xs.mark_sharding(key, data_model_mesh, (0,2,None,None))
+        xs.mark_sharding(value, data_model_mesh, (0,2,None,None))
 
         if layer_past is not None:
             past_key, past_value = layer_past
@@ -371,13 +379,12 @@ class GPT2Attention(nn.Module):
             attn_output, attn_weights = self._upcast_and_reordered_attn(query, key, value, attention_mask, head_mask)
         else:
             attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
-        xs.mark_sharding(attn_weights, data_model_mesh, range(min(3, len(attn_weights.shape))))
 
+        # attn output (batch, head, seq_length, head_features)
         attn_output = self._merge_heads(attn_output, self.num_heads, self.head_dim)
         attn_output = self.c_proj(attn_output)
         attn_output = self.resid_dropout(attn_output)
-
-        xs.mark_sharding(attn_output, data_model_mesh, range(min(3, len(attn_output.shape))))
+        xs.mark_sharding(attn_output, data_model_mesh, (0,1,2))
 
         outputs = (attn_output, present)
         if output_attentions:
@@ -1142,7 +1149,13 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
         )
+        ici_mesh_shape = (self.spmd_data_axis, 1, self.spmd_model_axis)
+        spmd_dcn_parallelism = 1
+        dcn_mesh_shape = (spmd_dcn_parallelism, 1, 1)  # self.spmd_dcn_parallelism
+        mesh = get_mesh(self.spmd_iota_mesh, ici_mesh_shape, dcn_mesh_shape)
+
         hidden_states = transformer_outputs[0]
+        xs.mark_sharding(hidden_states, mesh, (0, 1, 2))
 
         # Set device for model parallelism
         if self.model_parallel:
@@ -1150,11 +1163,6 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             hidden_states = hidden_states.to(self.lm_head.weight.device)
 
         lm_logits = self.lm_head(hidden_states)
-
-        ici_mesh_shape = (self.spmd_data_axis, 1, self.spmd_model_axis)
-        spmd_dcn_parallelism = 1
-        dcn_mesh_shape = (spmd_dcn_parallelism, 1, 1)  # self.spmd_dcn_parallelism
-        mesh = get_mesh(self.spmd_iota_mesh, ici_mesh_shape, dcn_mesh_shape)
         xs.mark_sharding(lm_logits, mesh, (0, 1, 2))
 
         loss = None

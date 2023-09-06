@@ -600,12 +600,6 @@ def main():
             assert len(param.shape) == 2
             xs.mark_sharding(param, mesh, range(len(param.shape)))
         elif model_args.spmd_2d_sharding > 0:
-            # Apply 2D sharding:
-            # embedding (model, data)
-            # attn QKV (data, model)
-            # attn O (model, data)
-            # mlp gate, up (model, data)
-            # mlp down (data, model)
             print('> [2D] Sharding tensor', name, param.shape)
             mod = model_args.spmd_2d_sharding
             data = num_devices // mod
@@ -614,6 +608,13 @@ def main():
             data_model = (0, 1)
             model_data = (1, 0)
 
+            # Apply 2D sharding:
+            # embedding (model, data)
+            # attn QKV (data, model)
+            # attn O (model, data)
+            # mlp gate, up (model, data)
+            # mlp down (data, model)
+
             # We don't care about layernorm's weights, and
             # LLaMA doesn't use biases.
             if len(param.shape) == 1:
@@ -621,19 +622,27 @@ def main():
 
             if 'embed_tokens' in name:
                 xs.mark_sharding(param, mesh, model_data)
+            elif 'wte' in name or 'wpe' in name:
+                xs.mark_sharding(param, mesh, model_data)
             elif 'q_proj' in name or 'k_proj' in name or 'v_proj' in name:
                 xs.mark_sharding(param, mesh, data_model)
+            elif 'c_attn' in name:
+                xs.mark_sharding(param, mesh, data_model)
             elif 'o_proj' in name:
+                xs.mark_sharding(param, mesh, model_data)
+            elif 'c_proj' in name:
                 xs.mark_sharding(param, mesh, model_data)
             elif 'gate_proj' in name or 'up_proj' in name:
                 xs.mark_sharding(param, mesh, model_data)
             elif 'down_proj' in name:
                 xs.mark_sharding(param, mesh, data_model)
+            elif 'c_fc' in name:
+                xs.mark_sharding(param, mesh, data_model)
             elif 'lm_head' in name:  # Not sure what this is but has the same shape as embed_tokens
                 xs.mark_sharding(param, mesh, model_data)
 
-        import torch_xla
-        print(torch_xla._XLAC._get_xla_sharding_spec(param))
+            import torch_xla
+            print(torch_xla._XLAC._get_xla_sharding_spec(param))
 
     # Move anything remaining to the xla device
     model = model.to(xm.xla_device())
