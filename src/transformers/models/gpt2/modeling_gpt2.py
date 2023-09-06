@@ -351,7 +351,7 @@ class GPT2Attention(nn.Module):
         key = self._split_heads(key, self.num_heads, self.head_dim)
         value = self._split_heads(value, self.num_heads, self.head_dim)
 
-        # Apply activation sharding
+        # Apply activation sharding, [data, None, model]
         data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
         xs.mark_sharding(query, data_model_mesh, (0,1,2,None))
         xs.mark_sharding(key, data_model_mesh, (0,1,2,None))
