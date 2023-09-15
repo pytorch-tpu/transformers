@@ -1134,7 +1134,7 @@ class LlamaModel(LlamaPreTrainedModel):
         # hidden_states (batch, length, hidden)
         # mesh (data, None, model)
         if self.spmd_debug:
-            print('> Sharding hidden_states', hidden_states.shape, self.spmd_mesh.get_logical_mesh().shape, partition_spec)
+            print('> Sharding hidden_states', hidden_states.shape, self.spmd_mesh.get_logical_mesh().shape)
         xs.mark_sharding(hidden_states, self.spmd_mesh, (('dcn', 'data'), None, 'model'))
         if self.spmd_debug:
             print(torch_xla._XLAC._get_xla_sharding_spec(hidden_states))
