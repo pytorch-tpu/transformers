@@ -525,6 +525,10 @@ def main():
     import torch_xla.core.xla_model as xm
     import torch_xla.experimental.xla_sharding as xs
 
+    # Ensure only one sharding scheme is provided
+    assert not model_args.spmd_fsdp_sharding or model_args.spmd_2d_sharding == 0, \
+        "Only one of --spmd_2d_sharding and --spmd_fsdp_sharding may be specified."
+
     # Pass the sharding parameters to the model config
     config.spmd_debug = model_args.spmd_debug
     config.spmd_fsdp_sharding = model_args.spmd_fsdp_sharding
