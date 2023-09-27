@@ -11,11 +11,11 @@ The following setup assumes to run the training job with Llama 2 7B.
 
 ### Cloud TPU VM Creation
 ```
-export TPU_NAME=jwtan-v4-32
+export TPU_NAME=your-tpu-name
 export ZONE=us-central2-b
 export ACCELERATOR_TYPE=v4-32
 export RUNTIME_VERSION=tpu-ubuntu2204-base
-export PROJECT=mlperf-high-priority-project
+export PROJECT=your-project
 
 gcloud alpha compute tpus queued-resources create $TPU_NAME
   \ --node-id=$TPU_NAME
