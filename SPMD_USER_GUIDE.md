@@ -210,3 +210,6 @@ gcloud alpha compute tpus tpu-vm ssh ${TPU_NAME} --worker all --command 'sudo do
 ```
 
 To use in GKE, create a Pod using your image in a TPU-VM-enabled cluster. See the [TPUs in GKE](https://cloud.google.com/tpu/docs/tpus-in-gke) guide for more details.
+
+## Run LLaMA2 Training with PyTorch/XLA FSDP API
+Please checkout [llama2-fsdp-training branch](https://github.com/pytorch-tpu/transformers/tree/llama2-fsdp-training) and follow [user guide](https://github.com/pytorch-tpu/transformers/blob/llama2-fsdp-training/FSDP_USER_GUIDE.md) for FSDP training.
