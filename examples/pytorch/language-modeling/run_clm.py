@@ -564,15 +564,19 @@ def main():
     for name, param in model.named_parameters():
         print(name, param.shape)
         if model_args.spmd_defer_init:
-            # Create an tensor based on the meta tensor
-            param = torch.empty_like(param, device='cpu')
-            torch.nn.init.uniform_(param, a=-0.05, b=0.05)
-            param = param.to(xm.xla_device())
-            # TODO(jonbolin): Can't load_state_dict when the module consists of meta tensors
-            path = re.sub(r'.(\d+)', r'[\1]', name)
-            assign = f'model.{path} = torch.nn.Parameter(param)'
-            # print(f'running "{assign}"')
-            exec(assign)
+            with torch.no_grad():
+                param = torch.empty_like(param, device='cpu')
+                # TODO(jonbolin): Currently, deferred initialization ignores any custom
+                # weight initialization in the model.
+                torch.nn.init.uniform_(param, a=-0.05, b=0.05)
+                param = torch.nn.Parameter(param.to(xm.xla_device()))
+                # Find the corresponding module
+                path = name.split('.')
+                module = model
+                for module_name in path[:-1]:
+                   module = dict(module.named_children())[module_name]
+                # Replace the meta tensor parameter with the initialized XLA tensor
+                module.register_parameter(path[-1], param)
 
         # Mark sharding based on the model_args
         if model_args.spmd_fsdp_sharding:
