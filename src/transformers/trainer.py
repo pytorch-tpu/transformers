@@ -2018,6 +2018,7 @@ class Trainer:
 
                 if step == profile_step and epoch == profile_epoch:
                     import tempfile
+                    xm.wait_device_ops()
                     trace = lambda: xp.trace('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
                     Thread(target=trace).start()
 
