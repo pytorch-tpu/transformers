@@ -370,7 +370,7 @@ def main():
     set_seed(training_args.seed)
 
     server = xp.start_server(9012)
-    logger.info('Profiling server started: {str(server)}')
+    logger.info(f'Profiling server started: {str(server)}')
 
 
     # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)

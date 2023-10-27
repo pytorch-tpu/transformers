@@ -1104,7 +1104,6 @@ class LlamaModel(LlamaPreTrainedModel):
         causal_mask = self._update_causal_mask(attention_mask, inputs_embeds, cache_position, past_seen_tokens)
 
         # embed positions
-        # Is this the input to the model?
         hidden_states = inputs_embeds
         # Apply 2D sharding:
         # hidden_states (batch, length, hidden)

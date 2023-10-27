@@ -17,12 +17,12 @@ export ACCELERATOR_TYPE=v4-32
 export RUNTIME_VERSION=tpu-ubuntu2204-base
 export PROJECT=your-project
 
-gcloud alpha compute tpus queued-resources create $TPU_NAME
-  \ --node-id=$TPU_NAME
-  \ --zone=$ZONE
-  \ --project=$PROJECT
-  \ --accelerator-type=$ACCELERATOR_TYPE
-  \ --runtime-version=$RUNTIME_VERSION
+gcloud alpha compute tpus queued-resources create $TPU_NAME \
+  --node-id=$TPU_NAME \
+  --zone=$ZONE \
+  --project=$PROJECT \
+  --accelerator-type=$ACCELERATOR_TYPE \
+  --runtime-version=$RUNTIME_VERSION
 ```
 
 Change `{TPU_NAME, ZONE, PROJECT, RUNTIME_VERSION}` as needed. For v5e, use the `v2-alpha-tpuv5-lite` runtime version in a supported project and zone. And use the following command to query the status of the creation request:
