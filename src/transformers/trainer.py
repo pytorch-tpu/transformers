@@ -24,6 +24,7 @@ import importlib.metadata
 import inspect
 import math
 import os
+import pickle
 import random
 import re
 import shutil
@@ -32,6 +33,7 @@ import tempfile
 import time
 import warnings
 import torch_xla.debug.profiler as xp
+from torch_xla.experimental.distributed_checkpoint import CheckpointManager
 from collections.abc import Mapping
 from pathlib import Path
 from threading import Thread
@@ -75,6 +77,7 @@ from .pytorch_utils import ALL_LAYERNORM_LAYERS, is_torch_greater_or_equal_than_
 from .tokenization_utils_base import PreTrainedTokenizerBase
 from .trainer_callback import (
     CallbackHandler,
+    CheckpointManagerCallback,
     DefaultFlowCallback,
     PrinterCallback,
     ProgressCallback,
@@ -556,8 +559,22 @@ class Trainer:
                 "Passing `optimizers` is not allowed if Deepspeed or PyTorch FSDP is enabled. "
                 "You should subclass `Trainer` and override the `create_optimizer_and_scheduler` method."
             )
+
+        self.chkpt_manager = None
+        if self.args.use_checkpoint_manager:
+            # TODO(jonbolin): Currently we manually initialize the process
+            # group in SPMD mode. This should be moved behind Accelerate.
+            torch.distributed.init_process_group('gloo', init_method='xla://')
+            self.chkpt_manager = CheckpointManager(
+                path=self.args.output_dir,
+                save_interval=float('inf'),  # Defer to the HF save strategy
+                max_to_keep=self.args.save_total_limit or 0
+            )
+
         default_callbacks = DEFAULT_CALLBACKS + get_reporting_integration_callbacks(self.args.report_to)
         callbacks = default_callbacks if callbacks is None else default_callbacks + callbacks
+        if self.args.use_checkpoint_manager:
+            callbacks.append(CheckpointManagerCallback(self.chkpt_manager))
         self.callback_handler = CallbackHandler(
             callbacks, self.model, self.tokenizer, self.optimizer, self.lr_scheduler
         )
@@ -570,7 +587,7 @@ class Trainer:
         self.hub_model_id = None
         if self.args.push_to_hub:
             self.init_hf_repo()
-        if self.args.should_save:
+        if self.args.should_save and not self.args.use_checkpoint_manager:
             os.makedirs(self.args.output_dir, exist_ok=True)
 
         if not callable(self.data_collator) and callable(getattr(self.data_collator, "collate_batch", None)):
@@ -1765,7 +1782,11 @@ class Trainer:
             import torch_xla.experimental.xla_sharding as xs
             import torch_xla.distributed.parallel_loader as pl
             sharding_spec = xs.ShardingSpec(self.args.spmd_mesh, (('dcn', 'data'), None))
-            return pl.MpDeviceLoader(dataloader, self.args.device, input_sharding=sharding_spec, loader_prefetch_size=self.args.train_batch_size, device_prefetch_size=4)
+            # TODO(jonbolin): Once integrated with Accelerate, we can use the Accelerate-prepared
+            # MpDeviceLoader instead of manually adding sharding and adding a dataset attribute.
+            loader = pl.MpDeviceLoader(dataloader, self.args.device, input_sharding=sharding_spec, loader_prefetch_size=self.args.train_batch_size, device_prefetch_size=4)
+            loader.dataset = dataloader.dataset
+            return loader
         else:
             return dataloader
 
@@ -2077,11 +2098,26 @@ class Trainer:
         steps_trained_progress_bar = None
 
         # Check if continuing training from a checkpoint
-        if resume_from_checkpoint is not None and os.path.isfile(
+        if (self.args.use_checkpoint_manager and self.chkpt_manager.all_steps()) or resume_from_checkpoint is not None and os.path.isfile(
             os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME)
         ):
-            self.state = TrainerState.load_from_json(os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME))
-            self.compare_trainer_and_checkpoint_args(self.args, self.state)
+            if self.args.use_checkpoint_manager:
+                max_step = max(self.chkpt_manager.all_steps())
+                # TODO(jonbolin): We need to prime the optimizer state to allow for sharding propagation.
+                from torch.utils._pytree import tree_map
+                def zero_grad(x):
+                    if isinstance(x, torch.Tensor) and x.requires_grad:
+                        x.grad = torch.zeros_like(x, requires_grad=False)
+                tree_map(zero_grad, self.optimizer.param_groups)
+                self.optimizer.step()
+                xm.mark_step()
+                state_dict = {"trainer_state": bytes(), "optim": self.optimizer.state_dict()}
+                self.chkpt_manager.restore(max_step, state_dict)
+                self.optimizer.load_state_dict(state_dict['optim'])
+                self.state = pickle.loads(state_dict["trainer_state"])
+            else:
+                self.state = TrainerState.load_from_json(os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME))
+                self.compare_trainer_and_checkpoint_args(self.args, self.state)
             epochs_trained = self.state.global_step // num_update_steps_per_epoch
             if not args.ignore_data_skip:
                 steps_trained_in_current_epoch = self.state.global_step % (num_update_steps_per_epoch)
@@ -2419,6 +2455,16 @@ class Trainer:
         if model is None:
             model = self.model
 
+        if self.args.use_checkpoint_manager:
+            tracked_steps = self.chkpt_manager.all_steps()
+            if tracked_steps:
+                max_step = max(tracked_steps)
+                print('Restoring model from checkpoint at step', max_step)
+                state_dict = {'model': model.state_dict()}
+                self.chkpt_manager.restore(max_step, state_dict)
+                model.load_state_dict(state_dict['model'])
+            return
+
         config_file = os.path.join(resume_from_checkpoint, CONFIG_NAME)
         adapter_weights_file = os.path.join(resume_from_checkpoint, ADAPTER_WEIGHTS_NAME)
         adapter_safe_weights_file = os.path.join(resume_from_checkpoint, ADAPTER_SAFE_WEIGHTS_NAME)
@@ -2452,7 +2498,7 @@ class Trainer:
                     adapter_safe_weights_file,
                 ]
             )
-            or is_fsdp_ckpt
+            or is_fsdp_ckpt or self.args.use_checkpoint_manager
         ):
             raise ValueError(f"Can't find a valid checkpoint at {resume_from_checkpoint}")
 
@@ -2766,6 +2812,17 @@ class Trainer:
         # In all cases, including ddp/dp/deepspeed, self.model is always a reference to the model we
         # want to save except FullyShardedDDP.
         # assert unwrap_model(model) is self.model, "internal model should be a reference to self.model"
+
+        if self.args.use_checkpoint_manager:
+            state_dict = {
+                'model': model.state_dict(),
+                'optim': self.optimizer.state_dict(),
+                'trainer_state': pickle.dumps(self.state)
+            }
+            # Force save the checkpoint, since the HF control has already
+            # determined that a checkpoint is required
+            self.chkpt_manager.save_async(self.state.global_step, state_dict, force=True)
+            return
 
         # Save model checkpoint
         checkpoint_folder = f"{PREFIX_CHECKPOINT_DIR}-{self.state.global_step}"
@@ -3282,8 +3339,6 @@ class Trainer:
             self.push_to_hub(commit_message="Model save")
 
     def _save_tpu(self, output_dir: Optional[str] = None):
-        #TODO(jonbolin): Re-enable
-        return
         output_dir = output_dir if output_dir is not None else self.args.output_dir
 
         logger.info(f"Saving model checkpoint to {output_dir}")
@@ -3327,8 +3382,6 @@ class Trainer:
         model.to(self.args.device)
 
     def _save(self, output_dir: Optional[str] = None, state_dict=None):
-        #TODO(jonbolin): Re-enable
-        return
         # If we are executing this function, we are the process zero, so we don't check for that.
         output_dir = output_dir if output_dir is not None else self.args.output_dir
         os.makedirs(output_dir, exist_ok=True)

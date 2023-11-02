@@ -605,3 +605,15 @@ class EarlyStoppingCallback(TrainerCallback):
         self.check_metric_value(args, state, control, metric_value)
         if self.early_stopping_patience_counter >= self.early_stopping_patience:
             control.should_training_stop = True
+
+
+class CheckpointManagerCallback(TrainerCallback):
+    """
+    A TrainerCallback which uses the CheckpointManager to select additional steps for checkpointing,
+    e.g. when a preemption is detected.
+    """
+    def __init__(self, chkpt_manager: 'CheckpointManager'):
+        self.chkpt_manager = chkpt_manager
+
+    def on_step_end(self, args, state, control, **kwargs):
+        control.should_save = self.chkpt_manager.should_save(state.global_step) or control.should_save
