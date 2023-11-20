@@ -561,19 +561,19 @@ class Trainer:
             )
 
         self.chkpt_manager = None
-        if self.args.use_checkpoint_manager:
+        if self.args.checkpoint_manager_path:
             # TODO(jonbolin): Currently we manually initialize the process
             # group in SPMD mode. This should be moved behind Accelerate.
             torch.distributed.init_process_group('gloo', init_method='xla://')
             self.chkpt_manager = CheckpointManager(
-                path=self.args.output_dir,
+                path=self.args.checkpoint_manager_path,
                 save_interval=float('inf'),  # Defer to the HF save strategy
                 max_to_keep=self.args.save_total_limit or 0
             )
 
         default_callbacks = DEFAULT_CALLBACKS + get_reporting_integration_callbacks(self.args.report_to)
         callbacks = default_callbacks if callbacks is None else default_callbacks + callbacks
-        if self.args.use_checkpoint_manager:
+        if self.chkpt_manager:
             callbacks.append(CheckpointManagerCallback(self.chkpt_manager))
         self.callback_handler = CallbackHandler(
             callbacks, self.model, self.tokenizer, self.optimizer, self.lr_scheduler
@@ -587,7 +587,7 @@ class Trainer:
         self.hub_model_id = None
         if self.args.push_to_hub:
             self.init_hf_repo()
-        if self.args.should_save and not self.args.use_checkpoint_manager:
+        if self.args.should_save:
             os.makedirs(self.args.output_dir, exist_ok=True)
 
         if not callable(self.data_collator) and callable(getattr(self.data_collator, "collate_batch", None)):
@@ -1862,7 +1862,7 @@ class Trainer:
                 raise ValueError(f"No valid checkpoint found in output directory ({args.output_dir})")
 
         if resume_from_checkpoint is not None:
-            if not is_sagemaker_mp_enabled() and not self.is_deepspeed_enabled and not self.is_fsdp_enabled:
+            if (not is_sagemaker_mp_enabled() and not self.is_deepspeed_enabled and not self.is_fsdp_enabled) or self.chkpt_manager:
                 self._load_from_checkpoint(resume_from_checkpoint)
             # In case of repeating the find_executable_batch_size, set `self._train_batch_size` properly
             state = TrainerState.load_from_json(os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME))
@@ -2098,10 +2098,10 @@ class Trainer:
         steps_trained_progress_bar = None
 
         # Check if continuing training from a checkpoint
-        if (self.args.use_checkpoint_manager and self.chkpt_manager.all_steps()) or resume_from_checkpoint is not None and os.path.isfile(
+        if (self.chkpt_manager and self.chkpt_manager.all_steps()) or resume_from_checkpoint is not None and os.path.isfile(
             os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME)
         ):
-            if self.args.use_checkpoint_manager:
+            if self.chkpt_manager:
                 max_step = max(self.chkpt_manager.all_steps())
                 # TODO(jonbolin): We need to prime the optimizer state to allow for sharding propagation.
                 from torch.utils._pytree import tree_map
@@ -2455,7 +2455,7 @@ class Trainer:
         if model is None:
             model = self.model
 
-        if self.args.use_checkpoint_manager:
+        if self.chkpt_manager:
             tracked_steps = self.chkpt_manager.all_steps()
             if tracked_steps:
                 max_step = max(tracked_steps)
@@ -2498,7 +2498,7 @@ class Trainer:
                     adapter_safe_weights_file,
                 ]
             )
-            or is_fsdp_ckpt or self.args.use_checkpoint_manager
+            or is_fsdp_ckpt
         ):
             raise ValueError(f"Can't find a valid checkpoint at {resume_from_checkpoint}")
 
@@ -2813,7 +2813,7 @@ class Trainer:
         # want to save except FullyShardedDDP.
         # assert unwrap_model(model) is self.model, "internal model should be a reference to self.model"
 
-        if self.args.use_checkpoint_manager:
+        if self.chkpt_manager:
             state_dict = {
                 'model': model.state_dict(),
                 'optim': self.optimizer.state_dict(),

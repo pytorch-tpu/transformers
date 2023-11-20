@@ -750,15 +750,18 @@ class TrainingArguments:
             only.
         use_checkpoint_manager (`bool`, *optional*):
             Whether or not to use the CheckpointManager to run distributed checkpoints.
+        checkpoint_manager_path (`str`, *optional*):
+            Path for CheckpointManager to target when saving checkpoints. Specifying this field will enable
+            CheckpointManager.
     """
 
     framework = "pt"
     output_dir: str = field(
         metadata={"help": "The output directory where the model predictions and checkpoints will be written."},
     )
-    use_checkpoint_manager: Optional[bool] = field(
-        default=False,
-        metadata={"help": "If set to `True`, uses the CheckpointManager to save state."},
+    checkpoint_manager_path: Optional[str] = field(
+        default=None,
+        metadata={"help": "Specify the path for CheckpointManager will checkpoint to. This flag controls whether or not CheckpointManager will be used - if unspecified, CheckpointManager will not be used."},
     )
     overwrite_output_dir: bool = field(
         default=False,
