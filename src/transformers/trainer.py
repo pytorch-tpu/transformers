@@ -1555,7 +1555,6 @@ class Trainer:
               else:
                 return xs.HybridMesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape)
 
-
             sharding_spec = None
             if self.args.spmd_batch_sharding:
                 mesh = get_mesh((num_devices, 1))
@@ -1567,7 +1566,11 @@ class Trainer:
                 mesh = get_mesh((fsdp, tensor))
                 partition_spec = (0, None)
                 sharding_spec = xs.ShardingSpec(mesh, partition_spec)
-
+            else:
+                # TODO(yeounoh) force replicated on the input if running SPMD. This
+                # way we prevent auto-sharding from overriding the sharding spec, which
+                # results in input resharding in foreground.
+                sharding_spec = xs.ShardingSpec(mesh, (None, None))
             return pl.MpDeviceLoader(dataloader, self.args.device, input_sharding=sharding_spec, loader_prefetch_size=self.args.train_batch_size, device_prefetch_size=4)
         else:
             return dataloader
