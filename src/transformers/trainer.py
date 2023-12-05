@@ -1840,7 +1840,10 @@ class Trainer:
             profile_epoch = int(os.environ.get('PROFILE_EPOCH', -1))
             profile_duration = int(os.environ.get('PROFILE_DURATION_MS', 20000))
             profile_logdir = os.environ.get('PROFILE_LOGDIR', None)
+
+            self.num_compilations = 0
             for step, inputs in enumerate(epoch_iterator):
+                self.last_time_stamp = time.time()
                 if step == 0 and epoch == 0:
                     print('input sharding', {k: (v.shape, torch_xla._XLAC._get_xla_sharding_spec(v)) for k, v in inputs.items()})
                 total_batched_samples += 1
@@ -1932,6 +1935,18 @@ class Trainer:
                         if not isinstance(self.lr_scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                             self.lr_scheduler.step()
 
+
+                    xm.mark_step()
+                    if self.num_compilations != met.metric_data('CompileTime')[:1] :
+                       self.num_compilations = met.metric_data('CompileTime')[:1]
+                    else:
+                       xm.rendezvous('step')
+                       step_time = time.time() - self.last_time_stamp
+                       data, fsdp, mdl = self.args.spmd_mesh.ici_mesh_shape
+                       num_devices = data * fsdp * mdl
+                       num_tokens = inputs["input_ids"].numel() / num_devices
+                       xm.master_print(f"Step time: {step_time}: Model TFLOPS: {self.model_flops(step_time, num_tokens)}")
+
                     model.zero_grad()
                     self.state.global_step += 1
                     self.state.epoch = epoch + (step + 1 + steps_skipped) / steps_in_epoch
@@ -1940,6 +1955,7 @@ class Trainer:
                     self._maybe_log_save_evaluate(tr_loss, model, trial, epoch, ignore_keys_for_eval)
                 else:
                     self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
+
 
                 if self.control.should_epoch_stop or self.control.should_training_stop:
                     break
@@ -2751,7 +2767,20 @@ class Trainer:
         else:
             self.accelerator.backward(loss)
 
+
+           # TODO: implement memory info for PJRT
+           #xm.master_print(f"Memory Info: {xm.get_memory_info(xm.xla_device())}")
+        
+
         return loss.detach() / self.args.gradient_accumulation_steps
+
+    def model_flops(self, step_time, num_tokens):
+        num_trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        model_flops = 6 * num_trainable_params * num_tokens
+        model_tflops_per_second = model_flops / step_time / 1e12  
+        return model_tflops_per_second
+
+
 
     def compute_loss(self, model, inputs, return_outputs=False):
         """
@@ -3221,6 +3250,9 @@ class Trainer:
 
             if is_torch_tpu_available():
                 xm.mark_step()
+
+                    
+
 
             # Update containers on host
             if loss is not None:
