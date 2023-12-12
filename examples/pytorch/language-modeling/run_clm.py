@@ -625,6 +625,10 @@ def main():
 
         print(f'{name} {torch_xla._XLAC._get_xla_sharding_spec(param)}')
 
+    for i, block in enumerate(model.model.layers):
+        # LLaMA-specific
+        xs.apply_backward_optimization_barrier(model.model.layers[i])
+
     if model_args.spmd_grad_chkpt:
         print("Applying gradient checkpointing")
         from torch_xla.distributed.fsdp import checkpoint_module
