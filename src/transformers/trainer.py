@@ -523,6 +523,8 @@ class Trainer:
                 "You should subclass `Trainer` and override the `create_optimizer_and_scheduler` method."
             )
 
+        self.xla_autocast = self.args.xla_autocast
+
         self.chkpt_manager = None
         if self.args.checkpoint_manager_path:
             # TODO(jonbolin): Currently we manually initialize the process
@@ -2730,7 +2732,10 @@ class Trainer:
         A helper wrapper that creates an appropriate context manager for `autocast` while feeding it the desired
         arguments, depending on the situation.
         """
-        if self.use_cpu_amp:
+        if self.xla_autocast:
+            from torch_xla.amp import autocast
+            ctx_manager = autocast(xm.xla_device())
+        elif self.use_cpu_amp:
             ctx_manager = torch.cpu.amp.autocast(cache_enabled=cache_enabled, dtype=self.amp_dtype)
         else:
             ctx_manager = contextlib.nullcontext()

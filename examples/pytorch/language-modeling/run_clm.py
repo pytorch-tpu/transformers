@@ -63,6 +63,8 @@ import torch_xla.runtime as xr
 
 # Enable SPMD mode execution
 xr.use_spmd()
+# Enable persistent caching
+xr.initialize_cache('/tmp/cache', readonly=xr.process_index() != 0)
 
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
