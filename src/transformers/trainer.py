@@ -2217,7 +2217,7 @@ class Trainer:
             profile_duration = int(os.environ.get('PROFILE_DURATION_MS', 20000))
             profile_logdir = os.environ.get('PROFILE_LOGDIR', None)
             for step, inputs in enumerate(epoch_iterator):
-                if step == 0 and epoch == 0:
+                if self.state.global_step == 0:
                     print('input sharding', {k: (v.shape, torch_xla._XLAC._get_xla_sharding_spec(v)) for k, v in inputs.items()})
                 total_batched_samples += 1
 
@@ -2339,6 +2339,26 @@ class Trainer:
                     self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval)
                 else:
                     self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
+
+                if self.args.xla_execution_time_step is not None:
+                    # To ensure the step time is accurate, we need to ensure that the measured wall
+                    # time only reflects execution of the single target step.
+                    if self.state.global_step == self.args.xla_execution_time_step:
+                        # After tracing is complete for the target step, ensure all device ops are
+                        # complete before calling `mark_step` to start execution.
+                        xm.wait_device_ops()
+                        execution_time_start = time.time()
+                    elif self.state.global_step == self.args.xla_execution_time_step + 1:
+                        # Wait for the step to complete, and measure the wall time.
+                        tracing_time = time.time() - execution_time_start
+                        xm.wait_device_ops()
+                        step_wall_time = time.time() - execution_time_start
+                        # Ensure that tracing is faster than device execution by a measurable
+                        # amount, otherwise the measured time may not actually reflect device
+                        # execution time.
+                        assert step_wall_time - tracing_time > 0.1, "Tracing time too close to device execution time"
+                        metrics = {'step_wall_time': step_wall_time, 'tracing_time': tracing_time}
+                        self.log(metrics)
 
                 if self.control.should_epoch_stop or self.control.should_training_stop:
                     # PyTorch/XLA relies on the data loader to insert the mark_step for
