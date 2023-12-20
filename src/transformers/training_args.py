@@ -759,7 +759,7 @@ class TrainingArguments:
     output_dir: str = field(
         metadata={"help": "The output directory where the model predictions and checkpoints will be written."},
     )
-    xla_execution_time_step: int = field(default=None, metadata={"help": "Global step to measure the execution time of with torch_xla"})
+    xla_execution_time_step: int = field(default=None, metadata={"help": "Global step to measure the on-device step execution time when using torch_xla."})
     checkpoint_manager_path: Optional[str] = field(
         default=None,
         metadata={"help": "Specify the path for CheckpointManager will checkpoint to. This flag controls whether or not CheckpointManager will be used - if unspecified, CheckpointManager will not be used."},

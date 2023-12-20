@@ -2341,22 +2341,25 @@ class Trainer:
                     self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
 
                 if self.args.xla_execution_time_step is not None:
-                    # To ensure the step time is accurate, we need to ensure that the measured wall
-                    # time only reflects execution of the single target step.
+                    # To ensure the step time is accurate, we need the measured wall
+                    # time to only reflect execution of the single target step.
                     if self.state.global_step == self.args.xla_execution_time_step:
-                        # After tracing is complete for the target step, ensure all device ops are
-                        # complete before calling `mark_step` to start execution.
+                        # After tracing is complete for the target step, wait for all device ops to
+                        # complete before the `mark_step` call starts its execution on devices.
                         xm.wait_device_ops()
                         execution_time_start = time.time()
                     elif self.state.global_step == self.args.xla_execution_time_step + 1:
-                        # Wait for the step to complete, and measure the wall time.
+                        # The time taken to reach this point in the next step is the tracing time.
                         tracing_time = time.time() - execution_time_start
+                        # Wait for the target step's execution to complete before measuring the
+                        # execution's wall time.
                         xm.wait_device_ops()
                         step_wall_time = time.time() - execution_time_start
-                        # Ensure that tracing is faster than device execution by a measurable
+                        # Tracing must be faster than device execution by a measurable
                         # amount, otherwise the measured time may not actually reflect device
                         # execution time.
-                        assert step_wall_time - tracing_time > 0.1, "Tracing time too close to device execution time"
+                        assert step_wall_time - tracing_time > 0.1, \
+                            f"Tracing time ({tracing_time}s) too close to overall step wall time ({step_wall_time}s)"
                         metrics = {'step_wall_time': step_wall_time, 'tracing_time': tracing_time}
                         self.log(metrics)
 
