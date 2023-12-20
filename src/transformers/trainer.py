@@ -172,6 +172,7 @@ if is_datasets_available():
 if is_torch_tpu_available(check_device=False):
     import torch_xla
     import torch_xla.core.xla_model as xm
+    import torch_xla.runtime as xr
     import torch_xla.debug.metrics as met
 
 
@@ -355,6 +356,10 @@ class Trainer:
 
         # force device and distributed setup init explicitly
         args._setup_devices
+
+        if args.xla_cache_path:
+            readonly = args.xla_cache_single_writer and xr.process_index() != 0
+            xr.initialize_cache(args.xla_cache_path, readonly)
 
         if model is None:
             if model_init is not None:

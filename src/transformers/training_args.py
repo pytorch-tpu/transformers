@@ -636,6 +636,8 @@ class TrainingArguments:
     )
     xla_execution_time_step: int = field(default=None, metadata={"help": "Global step to measure the on-device step execution time when using torch_xla."})
     xla_autocast: bool = field(default=False, metadata={"help": "Use autocast for training with torch_xla"})
+    xla_cache_path: Optional[str] = field(default=None, metadata={"help": "Path for the persistent compilation caching with torch_xla"})
+    xla_cache_single_writer: bool = field(default=False, metadata={"help": "Whether or not only process 0 can write to the cache in torch_xla"})
     checkpoint_manager_path: Optional[str] = field(
         default=None,
         metadata={"help": "Specify the path for CheckpointManager will checkpoint to. This flag controls whether or not CheckpointManager will be used - if unspecified, CheckpointManager will not be used."},
