@@ -2257,8 +2257,7 @@ class Trainer:
 
                 if step == profile_step and epoch == profile_epoch:
                     import tempfile
-                    trace = lambda: xp.trace('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
-                    Thread(target=trace).start()
+                    xp.trace_detached('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
 
                 with self.accelerator.accumulate(model):
                     tr_loss_step = self.training_step(model, inputs)
