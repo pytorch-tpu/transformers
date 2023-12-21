@@ -267,30 +267,33 @@ class LlamaMLP(nn.Module):
             # up_proj (batch, length, intermediate)
             # mesh (data, None, model)
             data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
-            if self.spmd_debug:
-                print('> Sharding up_proj', up_proj.shape)
-            xs.mark_sharding(up_proj, data_model_mesh, range(len(up_proj.shape)))
-            if self.spmd_debug:
-                print(torch_xla._XLAC._get_xla_sharding_spec(up_proj))
+            if not os.environ['XLA_AUTO_SPMD']:
+              if self.spmd_debug:
+                  print('> Sharding up_proj', up_proj.shape)
+              xs.mark_sharding(up_proj, data_model_mesh, range(len(up_proj.shape)))
+              if self.spmd_debug:
+                  print(torch_xla._XLAC._get_xla_sharding_spec(up_proj))
 
             gate_proj = self.act_fn(self.gate_proj(x))
             # Apply 2D sharding:
             # gate_proj (batch, length, intermediate)
             # mesh (data, None, model)
-            if self.spmd_debug:
-                print('> Sharding gate_proj', gate_proj.shape)
-            xs.mark_sharding(gate_proj, data_model_mesh, range(len(up_proj.shape)))
-            if self.spmd_debug:
-                print(torch_xla._XLAC._get_xla_sharding_spec(gate_proj))
+            if not os.environ['XLA_AUTO_SPMD']:
+              if self.spmd_debug:
+                  print('> Sharding gate_proj', gate_proj.shape)
+              xs.mark_sharding(gate_proj, data_model_mesh, range(len(up_proj.shape)))
+              if self.spmd_debug:
+                  print(torch_xla._XLAC._get_xla_sharding_spec(gate_proj))
 
             down_proj = self.down_proj(gate_proj * up_proj)
             # down_proj (batch, length, hidden)
             # mesh (data, None, model)
-            if self.spmd_debug:
-                print('> Sharding down_proj', down_proj.shape)
-            xs.mark_sharding(down_proj, data_model_mesh, range(len(down_proj.shape)))
-            if self.spmd_debug:
-                print(torch_xla._XLAC._get_xla_sharding_spec(down_proj))
+            if not os.environ['XLA_AUTO_SPMD']:
+              if self.spmd_debug:
+                  print('> Sharding down_proj', down_proj.shape)
+              xs.mark_sharding(down_proj, data_model_mesh, range(len(down_proj.shape)))
+              if self.spmd_debug:
+                  print(torch_xla._XLAC._get_xla_sharding_spec(down_proj))
 
         return down_proj
 
