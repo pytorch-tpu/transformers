@@ -692,10 +692,12 @@ def main():
         if hasattr(model, 'transformer'):
           for i, block in enumerate(model.transformer.h):
               # GPT-2, Neo
+              xs.apply_backward_optimization_barrier(model.transformer.h[i])
               model.transformer.h[i] = checkpoint_module(block)
         elif hasattr(model, 'model'):
           for i, block in enumerate(model.model.layers):
               # Llama
+              xs.apply_backward_optimization_barrier(model.model.layers[i])
               model.model.layers[i] = checkpoint_module(block)
 
     # Preprocessing the datasets.
