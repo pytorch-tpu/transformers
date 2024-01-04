@@ -186,6 +186,7 @@ if is_datasets_available():
 if is_torch_xla_available():
     import torch_xla
     import torch_xla.core.xla_model as xm
+    import torch_xla.runtime as xr
     import torch_xla.debug.metrics as met
     from torch_xla import __version__ as XLA_VERSION
 
@@ -404,6 +405,10 @@ class Trainer:
         # force device and distributed setup init explicitly
         args._setup_devices
 
+        if args.xla_cache_path:
+            readonly = args.xla_cache_single_writer and xr.process_index() != 0
+            xr.initialize_cache(args.xla_cache_path, readonly)
+
         if model is None:
             if model_init is not None:
                 self.model_init = model_init
@@ -559,6 +564,8 @@ class Trainer:
                 "Passing `optimizers` is not allowed if Deepspeed or PyTorch FSDP is enabled. "
                 "You should subclass `Trainer` and override the `create_optimizer_and_scheduler` method."
             )
+
+        self.xla_autocast = self.args.xla_autocast
 
         self.chkpt_manager = None
         if self.args.checkpoint_manager_path:
@@ -3207,7 +3214,10 @@ class Trainer:
         A helper wrapper that creates an appropriate context manager for `autocast` while feeding it the desired
         arguments, depending on the situation.
         """
-        if self.use_cpu_amp:
+        if self.xla_autocast:
+            from torch_xla.amp import autocast
+            ctx_manager = autocast(xm.xla_device())
+        elif self.use_cpu_amp:
             ctx_manager = torch.cpu.amp.autocast(cache_enabled=cache_enabled, dtype=self.amp_dtype)
         else:
             ctx_manager = contextlib.nullcontext()
