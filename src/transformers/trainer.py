@@ -1566,11 +1566,24 @@ class Trainer:
                 mesh = get_mesh((fsdp, tensor))
                 partition_spec = (0, None)
                 sharding_spec = xs.ShardingSpec(mesh, partition_spec)
-            else:
-                # TODO(yeounoh) force replicated on the input if running SPMD. This
-                # way we prevent auto-sharding from overriding the sharding spec, which
-                # results in input resharding in foreground.
-                sharding_spec = xs.ShardingSpec(mesh, (None, None))
+
+            if self.args.spmd_auto_sharding:
+                print('XLA_USE_SPMD=', os.getenv('XLA_USE_SPMD'))
+                print('XLA_AUTO_SPMD=', os.getenv('XLA_AUTO_SPMD'))
+                auto_mesh = os.getenv('XLA_AUTO_SPMD_MESH')
+                print('XLA_AUTO_SPMD_MESH=', auto_mesh)
+                if auto_mesh:
+                    mesh_shape = tuple(list(map(int,auto_mesh.split(','))))
+                    mesh = get_mesh(mesh_shape)
+                    if mesh_shape[0] == 1 or mesh_shape[1] == 1:
+                      sharding_spec = xs.ShardingSpec(mesh, (0, 1))
+                    else:
+                      sharding_spec = xs.ShardingSpec(mesh, (0, None))
+                else:
+                    mesh = get_mesh((num_devices, 1))
+                    sharding_spec = xs.ShardingSpec(mesh, (0, 1))
+                print('input sharding mesh=', mesh.mesh_shape)
+            print('input sharding spec=', sharding_spec)
             return pl.MpDeviceLoader(dataloader, self.args.device, input_sharding=sharding_spec, loader_prefetch_size=self.args.train_batch_size, device_prefetch_size=4)
         else:
             return dataloader

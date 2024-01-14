@@ -78,6 +78,7 @@ def init_spmd(model, config):
       assert model.spmd_data_axis * model.spmd_model_axis == num_devices
       model.spmd_iota_mesh = config.spmd_iota_mesh
     else:
+      # TODO(yeounoh) remove this once enable the AUTO SPMD API.
       os.environ['XLA_AUTO_SPMD'] = '1'
 
 def get_mesh(spmd_iota_mesh, ici_mesh_shape, dcn_mesh_shape=None):
@@ -216,7 +217,7 @@ class GPT2Attention(nn.Module):
         attn_weights = torch.einsum('ijkl,ijhl->ijkh', query, key)
 
         # attn weight (batch, head, seq_length, seq_length)
-        if not os.environ['XLA_AUTO_SPMD']:
+        if not os.getenv('XLA_AUTO_SPMD'):
           data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
           xs.mark_sharding(attn_weights, data_model_mesh, (0,2,None,None))
 
@@ -241,12 +242,12 @@ class GPT2Attention(nn.Module):
 
         if attention_mask is not None:
             # Apply the attention mask
-            if not os.environ['XLA_AUTO_SPMD']:
+            if not os.getenv('XLA_AUTO_SPMD'):
               xs.mark_sharding(attention_mask, data_model_mesh, (0,2,None,None))
             attn_weights = attn_weights + attention_mask
 
         attn_weights = nn.functional.softmax(attn_weights, dim=-1)
-        if not os.environ['XLA_AUTO_SPMD']:
+        if not os.getenv('XLA_AUTO_SPMD'):
           xs.mark_sharding(attn_weights, data_model_mesh, (0,2,None,None))
 
         # Downcast (if necessary) back to V's dtype (if in mixed-precision) -- No-Op otherwise
@@ -366,7 +367,7 @@ class GPT2Attention(nn.Module):
         # Apply activation sharding, [data, None, model]
         # query, key, value (batch, head, seq_length, head_features),
         # as we are not using grouped query.
-        if not os.environ['XLA_AUTO_SPMD']:
+        if not os.getenv('XLA_AUTO_SPMD'):
           data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
           xs.mark_sharding(query, data_model_mesh, (0,2,None,None))
           xs.mark_sharding(key, data_model_mesh, (0,2,None,None))
@@ -391,7 +392,7 @@ class GPT2Attention(nn.Module):
         attn_output = self._merge_heads(attn_output, self.num_heads, self.head_dim)
         attn_output = self.c_proj(attn_output)
         attn_output = self.resid_dropout(attn_output)
-        if not os.environ['XLA_AUTO_SPMD']:
+        if not os.getenv('XLA_AUTO_SPMD'):
           xs.mark_sharding(attn_output, data_model_mesh, (0,1,2))
 
         outputs = (attn_output, present)
@@ -414,14 +415,14 @@ class GPT2MLP(nn.Module):
 
     def forward(self, hidden_states: Optional[Tuple[torch.FloatTensor]]) -> torch.FloatTensor:
         hidden_states = self.c_fc(hidden_states)
-        if not os.environ['XLA_AUTO_SPMD']:
+        if not os.getenv('XLA_AUTO_SPMD'):
           data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
           xs.mark_sharding(hidden_states, data_model_mesh, range(len(hidden_states.shape)))
         hidden_states = self.act(hidden_states)
-        if not os.environ['XLA_AUTO_SPMD']:
+        if not os.getenv('XLA_AUTO_SPMD'):
           xs.mark_sharding(hidden_states, data_model_mesh, range(len(hidden_states.shape)))
         hidden_states = self.c_proj(hidden_states)
-        if not os.environ['XLA_AUTO_SPMD']:
+        if not os.getenv('XLA_AUTO_SPMD'):
           xs.mark_sharding(hidden_states, data_model_mesh, range(len(hidden_states.shape)))
         hidden_states = self.dropout(hidden_states)
         return hidden_states
@@ -1160,7 +1161,7 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             return_dict=return_dict,
         )
         hidden_states = transformer_outputs[0]
-        if not os.environ['XLA_AUTO_SPMD']:
+        if not os.getenv('XLA_AUTO_SPMD'):
           ici_mesh_shape = (self.spmd_data_axis, 1, self.spmd_model_axis)
           spmd_dcn_parallelism = 1
           dcn_mesh_shape = (spmd_dcn_parallelism, 1, 1)  # self.spmd_dcn_parallelism
@@ -1173,7 +1174,7 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             hidden_states = hidden_states.to(self.lm_head.weight.device)
 
         lm_logits = self.lm_head(hidden_states)
-        if not os.environ['XLA_AUTO_SPMD']:
+        if not os.getenv('XLA_AUTO_SPMD'):
           xs.mark_sharding(lm_logits, mesh, (0, 1, 2))
 
         loss = None
