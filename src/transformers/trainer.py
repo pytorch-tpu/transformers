@@ -1871,6 +1871,7 @@ class Trainer:
                     self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
                 if step == profile_step and epoch == profile_epoch:
+                    xm.wait_device_ops()
                     import tempfile
                     xp.trace_detached('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
 
