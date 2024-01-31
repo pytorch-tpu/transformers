@@ -2262,10 +2262,6 @@ class Trainer:
                 if step % args.gradient_accumulation_steps == 0:
                     self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
-                if step == profile_step and epoch == profile_epoch:
-                    import tempfile
-                    xp.trace_detached('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
-
                 with self.accelerator.accumulate(model):
                     tr_loss_step = self.training_step(model, inputs)
 
@@ -2368,6 +2364,14 @@ class Trainer:
                             f"Tracing time ({tracing_time}s) too close to overall step wall time ({step_wall_time}s)"
                         metrics = {'step_wall_time': step_wall_time, 'tracing_time': tracing_time}
                         self.log(metrics)
+
+                if step == profile_step and epoch == profile_epoch:
+                    # Wait until device execution catches up to tracing before triggering the profile. This will
+                    # interrupt training slightly on the hosts which are capturing, but by waiting after tracing
+                    # for the step, the interruption will be minimal.
+                    xm.wait_device_ops()
+                    import tempfile
+                    xp.trace_detached('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
 
                 if self.control.should_epoch_stop or self.control.should_training_stop:
                     # PyTorch/XLA relies on the data loader to insert the mark_step for
