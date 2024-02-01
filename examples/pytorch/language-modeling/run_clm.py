@@ -214,6 +214,14 @@ class ModelArguments:
             )
         },
     )
+    peft_lora: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Enable LoRA with PEFT"
+            )
+        },
+    )
 
     def __post_init__(self):
         if self.config_overrides is not None and (self.config_name is not None or self.model_name_or_path is not None):
@@ -635,6 +643,16 @@ def main():
         for i, block in enumerate(model.model.layers):
             # LLaMA-specific
             model.model.layers[i] = checkpoint_module(block)
+
+    # PEFT LoRA integration starts here.
+    # TODO: do we ever want to optimize the memory usage of LoRA? Like apply grad ckpt or sharding?
+    if model_args.peft_lora:
+        from peft import LoraConfig, TaskType, get_peft_model
+        # We don't set dropout here because dropout requires special xla flags to be memory efficient.
+        peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.0)
+        model = get_peft_model(model, peft_config)
+        print("LoRA enabled")
+        model.print_trainable_parameters()
 
     # Preprocessing the datasets.
     # First we tokenize all the texts.
