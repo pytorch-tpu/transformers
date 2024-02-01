@@ -645,9 +645,11 @@ def main():
     # TODO: do we ever want to optimize the memory usage of LoRA? Like apply grad ckpt or sharding?
     if model_args.peft_lora:
         from peft import LoraConfig, TaskType, get_peft_model
-        # task_type is ommited as the default Llama doesn't seem to fall into any of the categories.
-        peft_config = LoraConfig(inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.1)
+        # We don't set dropout here because dropout requires special xla flags to be memory efficient.
+        peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.0)
         model = get_peft_model(model, peft_config)
+        print("LoRA enabled")
+        model.print_trainable_parameters()
 
     # Preprocessing the datasets.
     # First we tokenize all the texts.
