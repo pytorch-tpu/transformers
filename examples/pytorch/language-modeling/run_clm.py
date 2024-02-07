@@ -579,11 +579,11 @@ def main():
     for name, param in model.named_parameters():
         if model_args.spmd_defer_init:
             with torch.no_grad():
-                param = torch.empty_like(param, device='cpu')
+                param = torch.empty_like(param, device='xla')
                 # TODO(jonbolin): Currently, deferred initialization ignores any custom
                 # weight initialization in the model.
                 torch.nn.init.uniform_(param, a=-0.05, b=0.05)
-                param = torch.nn.Parameter(param.to(xm.xla_device()))
+                param = torch.nn.Parameter(param)
                 # Find the corresponding module
                 path = name.split('.')
                 module = model
@@ -806,10 +806,10 @@ def main():
 
         metrics = train_result.metrics
 
-        max_train_samples = (
-            data_args.max_train_samples if data_args.max_train_samples is not None else len(train_dataset)
-        )
-        metrics["train_samples"] = min(max_train_samples, len(train_dataset))
+        #max_train_samples = (
+        #    data_args.max_train_samples if data_args.max_train_samples is not None else len(train_dataset)
+        #)
+        #metrics["train_samples"] = min(max_train_samples, len(train_dataset))
 
         trainer.log_metrics("train", metrics)
         trainer.save_metrics("train", metrics)
@@ -841,10 +841,10 @@ def main():
         else:
             kwargs["dataset"] = data_args.dataset_name
 
-    if training_args.push_to_hub:
-        trainer.push_to_hub(**kwargs)
-    else:
-        trainer.create_model_card(**kwargs)
+    #if training_args.push_to_hub:
+    #    trainer.push_to_hub(**kwargs)
+    #else:
+    #    trainer.create_model_card(**kwargs)
 
 
 def _mp_fn(index):
