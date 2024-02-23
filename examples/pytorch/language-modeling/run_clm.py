@@ -514,7 +514,7 @@ def main():
     # the batch dimension sharded along the combined DCN and data axes.
     num_devices = xr.global_runtime_device_count()
     model_axis = max(model_args.spmd_2d_sharding, 1)
-    assert xr.device_type() == 'TPU' or xr.device_type() == 'CUDA', "Supported hardware are TPU and CUDA. Detected hardware: ", xr.device_type() 
+    assert xr.device_type() == 'TPU' or xr.device_type() == 'CUDA', f"Supported hardware are TPU and CUDA. Detected hardware: {xr.device_type()}" 
     if xr.device_type() == 'TPU':
         dcn_axis = model_args.spmd_dcn_parallelism
         data_axis = num_devices // model_axis // dcn_axis
