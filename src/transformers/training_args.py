@@ -1419,7 +1419,7 @@ class TrainingArguments:
             and (self.device.type != "cuda")
             and (self.device.type != "npu")
             and (self.device.type != "xpu")
-            and (get_xla_device_type(self.device) != "GPU")
+            and (get_xla_device_type(self.device) != "CUDA")
             and (self.fp16 or self.fp16_full_eval)
         ):
             raise ValueError(
@@ -1433,7 +1433,7 @@ class TrainingArguments:
             and (self.device.type != "cuda")
             and (self.device.type != "npu")
             and (self.device.type != "xpu")
-            and (get_xla_device_type(self.device) != "GPU")
+            and (get_xla_device_type(self.device) != "CUDA")
             and (get_xla_device_type(self.device) != "TPU")
             and (self.device.type != "cpu")
             and (self.bf16 or self.bf16_full_eval)

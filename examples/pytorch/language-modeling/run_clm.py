@@ -319,7 +319,8 @@ def main():
         # let's parse it to get our arguments.
         model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+        model_args, data_args, training_args = parser.parse_args_into_dataclasses() # here
+    print('xw32 training_args.device=', training_args.device)
 
     if model_args.use_auth_token is not None:
         warnings.warn("The `use_auth_token` argument is deprecated and will be removed in v4.34.", FutureWarning)
@@ -513,14 +514,22 @@ def main():
     # replicated along the DCN axis, and inputs and activations should have
     # the batch dimension sharded along the combined DCN and data axes.
     num_devices = xr.global_runtime_device_count()
+    print('xw32 num_devices=', num_devices) # prints 4
     model_axis = max(model_args.spmd_2d_sharding, 1)
-    dcn_axis = model_args.spmd_dcn_parallelism
-    data_axis = num_devices // model_axis // dcn_axis
-    ici_mesh_shape = (1, data_axis, model_axis)
-    dcn_mesh_shape = (dcn_axis, 1, 1)
-    spmd_mesh = xs.HybridMesh(ici_mesh_shape=ici_mesh_shape,
-                              dcn_mesh_shape=dcn_mesh_shape,
-                              axis_names=('dcn', 'data', 'model'))
+    if xr.device_type() == 'TPU':
+        dcn_axis = model_args.spmd_dcn_parallelism
+        data_axis = num_devices // model_axis // dcn_axis
+        print('xw32 model_axis=', model_axis, ', dcn_axis=', dcn_axis, ', data_axis=', data_axis)
+        # prints xw32 model_axis= 1 , dcn_axis= 1 , data_axis= 4
+        ici_mesh_shape = (1, data_axis, model_axis)
+        dcn_mesh_shape = (dcn_axis, 1, 1)
+        spmd_mesh = xs.HybridMesh(ici_mesh_shape=ici_mesh_shape,
+                                dcn_mesh_shape=dcn_mesh_shape,
+                                axis_names=('dcn', 'data', 'model'))
+    elif xr.device_type() == 'CUDA':
+        data_axis = num_devices // model_axis
+        mesh_shape = (1, data_axis, model_axis)
+        spmd_mesh = xs.Mesh(np.arange(num_devices), mesh_shape, ('dcn', 'data', 'model'))
 
     # Update training args with relevant SPMD config
     training_args.spmd_mesh = spmd_mesh
@@ -531,10 +540,10 @@ def main():
 
     # Initialize the model on the meta device to avoid host-side OOM.
     context = contextlib.nullcontext()
-    if model_args.spmd_defer_init:
+    if model_args.spmd_defer_init: # false
         context = init_empty_weights()
     with context:
-        if model_args.model_name_or_path:
+        if model_args.model_name_or_path: # false
             torch_dtype = (
                 model_args.torch_dtype
                 if model_args.torch_dtype in ["auto", None]
@@ -570,14 +579,14 @@ def main():
     model = apply_xla_patch_to_nn_linear(model, xs.xla_patched_nn_linear_forward)
 
     # Set the dtype, and move to the XLA device when parameters are already initialized
-    if model_args.spmd_defer_init:
+    if model_args.spmd_defer_init: # false
         model = model.to(dtype=getattr(torch, model_args.torch_dtype))
     else:
         model = model.to(xm.xla_device(), dtype=getattr(torch, model_args.torch_dtype))
 
     # Shard each parameter in the model based on the sharding strategy provided.
     for name, param in model.named_parameters():
-        if model_args.spmd_defer_init:
+        if model_args.spmd_defer_init: # false
             with torch.no_grad():
                 param = torch.empty_like(param, device='cpu')
                 # TODO(jonbolin): Currently, deferred initialization ignores any custom
@@ -592,7 +601,7 @@ def main():
                 # Replace the meta tensor parameter with the initialized XLA tensor
                 module.register_parameter(path[-1], param)
 
-        if model_args.spmd_fsdp_sharding:
+        if model_args.spmd_fsdp_sharding: # false
             print('> [FSDP] Sharding tensor', name, param.shape, param.dtype)
             # We don't care about layernorm's weights, and
             # LLaMA doesn't use biases.
@@ -606,15 +615,16 @@ def main():
             else:
                 partition_spec = (None, 'data')
             xs.mark_sharding(param, spmd_mesh, partition_spec)
-        elif model_args.spmd_2d_sharding > 0:
+        elif model_args.spmd_2d_sharding > 0: # true, model_args.spmd_2d_sharding==1
             # Apply 2D sharding:
             print('> [2D] Sharding tensor', name, param.shape)
 
             # We don't care about layernorm's weights, and
             # LLaMA doesn't use biases.
-            if len(param.shape) == 1:
+            if len(param.shape) == 1: # false, len(param.shape)==2
                 continue
-
+            
+            # name='model.embed_tokens.weight
             if 'embed_tokens' in name:
                 xs.mark_sharding(param, spmd_mesh, ('model', 'data'))
             elif 'q_proj' in name or 'k_proj' in name or 'v_proj' in name:
@@ -629,12 +639,14 @@ def main():
                 xs.mark_sharding(param, spmd_mesh, ('model', 'data'))
 
         print(f'{name} {torch_xla._XLAC._get_xla_sharding_spec(param)}')
+        # Above line prints: model.embed_tokens.weight {devices=[1,4]0,1,2,3}
+        # xw32: is the above torch_xla._XLAC._get_xla_sharding_spec(param) correct?
 
     for i, block in enumerate(model.model.layers):
         # LLaMA-specific
         xs.apply_backward_optimization_barrier(model.model.layers[i])
 
-    if model_args.spmd_grad_chkpt:
+    if model_args.spmd_grad_chkpt: # true
         print("Applying gradient checkpointing")
         from torch_xla.distributed.fsdp import checkpoint_module
         for i, block in enumerate(model.model.layers):
@@ -643,7 +655,7 @@ def main():
 
     # PEFT LoRA integration starts here.
     # TODO: do we ever want to optimize the memory usage of LoRA? Like apply grad ckpt or sharding?
-    if model_args.peft_lora:
+    if model_args.peft_lora: # false
         from peft import LoraConfig, TaskType, get_peft_model
         # We don't set dropout here because dropout requires special xla flags to be memory efficient.
         peft_config = LoraConfig(task_type=TaskType.CAUSAL_LM, inference_mode=False, r=8, lora_alpha=32, lora_dropout=0.0)
@@ -653,11 +665,11 @@ def main():
 
     # Preprocessing the datasets.
     # First we tokenize all the texts.
-    if training_args.do_train:
+    if training_args.do_train: # true
         column_names = list(raw_datasets["train"].features)
     else:
         column_names = list(raw_datasets["validation"].features)
-    text_column_name = "text" if "text" in column_names else column_names[0]
+    text_column_name = "text" if "text" in column_names else column_names[0] # text_column_name=="text"
 
     # since this will be pickled to avoid _LazyModule error in Hasher force logger loading before tokenize_function
     tok_logger = transformers.utils.logging.get_logger("transformers.tokenization_utils_base")
@@ -674,7 +686,7 @@ def main():
         return output
 
     with training_args.main_process_first(desc="dataset map tokenization"):
-        if not data_args.streaming:
+        if not data_args.streaming: # true
             tokenized_datasets = raw_datasets.map(
                 tokenize_function,
                 batched=True,
@@ -690,7 +702,7 @@ def main():
                 remove_columns=column_names,
             )
 
-    if data_args.block_size is None:
+    if data_args.block_size is None: # false
         block_size = tokenizer.model_max_length
         if block_size > config.max_position_embeddings:
             logger.warning(
@@ -730,7 +742,7 @@ def main():
     # https://huggingface.co/docs/datasets/process#map
 
     with training_args.main_process_first(desc="grouping texts together"):
-        if not data_args.streaming:
+        if not data_args.streaming: # true
             lm_datasets = tokenized_datasets.map(
                 group_texts,
                 batched=True,
@@ -748,11 +760,11 @@ def main():
         if "train" not in tokenized_datasets:
             raise ValueError("--do_train requires a train dataset")
         train_dataset = lm_datasets["train"]
-        if data_args.max_train_samples is not None:
+        if data_args.max_train_samples is not None: # false
             max_train_samples = min(len(train_dataset), data_args.max_train_samples)
             train_dataset = train_dataset.select(range(max_train_samples))
 
-    if training_args.do_eval:
+    if training_args.do_eval: # false
         if "validation" not in tokenized_datasets:
             raise ValueError("--do_eval requires a validation dataset")
         eval_dataset = lm_datasets["validation"]
@@ -778,8 +790,8 @@ def main():
             return metric.compute(predictions=preds, references=labels)
 
     # Initialize our Trainer
-    trainer = Trainer(
-        model=model,
+    trainer = Trainer( # here is where the error happens https://paste.googleplex.com/6578858617208832
+        model=model, # mode.device is device(type='xla', index=0)
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
         eval_dataset=eval_dataset if training_args.do_eval else None,
