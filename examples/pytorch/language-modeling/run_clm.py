@@ -517,13 +517,19 @@ def main():
     # the batch dimension sharded along the combined DCN and data axes.
     num_devices = xr.global_runtime_device_count()
     model_axis = max(model_args.spmd_2d_sharding, 1)
-    dcn_axis = model_args.spmd_dcn_parallelism
-    data_axis = num_devices // model_axis // dcn_axis
-    ici_mesh_shape = (1, data_axis, model_axis)
-    dcn_mesh_shape = (dcn_axis, 1, 1)
-    spmd_mesh = xs.HybridMesh(ici_mesh_shape=ici_mesh_shape,
-                              dcn_mesh_shape=dcn_mesh_shape,
-                              axis_names=('dcn', 'data', 'model'))
+    assert xr.device_type() == 'TPU' or xr.device_type() == 'CUDA', f"Supported hardware are TPU and CUDA. Detected hardware: {xr.device_type()}" 
+    if xr.device_type() == 'TPU':
+        dcn_axis = model_args.spmd_dcn_parallelism
+        data_axis = num_devices // model_axis // dcn_axis
+        ici_mesh_shape = (1, data_axis, model_axis)
+        dcn_mesh_shape = (dcn_axis, 1, 1)
+        spmd_mesh = xs.HybridMesh(ici_mesh_shape=ici_mesh_shape,
+                                dcn_mesh_shape=dcn_mesh_shape,
+                                axis_names=('dcn', 'data', 'model'))
+    elif xr.device_type() == 'CUDA':
+        data_axis = num_devices // model_axis
+        mesh_shape = (1, data_axis, model_axis)
+        spmd_mesh = xs.Mesh(np.arange(num_devices), mesh_shape, ('dcn', 'data', 'model'))
 
     # Update training args with relevant SPMD config
     training_args.spmd_mesh = spmd_mesh
@@ -617,7 +623,7 @@ def main():
             # LLaMA doesn't use biases.
             if len(param.shape) == 1:
                 continue
-
+            
             if 'embed_tokens' in name:
                 xs.mark_sharding(param, spmd_mesh, ('model', 'data'))
             elif 'q_proj' in name or 'k_proj' in name or 'v_proj' in name:
