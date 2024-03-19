@@ -658,11 +658,19 @@ class Trainer:
 
         self.is_xla_auto_sharding = args.xla_auto_sharding
         if  self.is_xla_auto_sharding:
+            xr.use_spmd(auto=True)
+
             # Prepare the SPMD mesh that is going to be used by the data loader and the auto-sharding pass.
             # Input data is sharded by the data loader using `fsdp` axis, and the auto-sharding pass will consider
             # both `fsdp` `tensor` axes for sharding.
             num_devices = xr.global_runtime_device_count()
-            xs.set_global_mesh(xs.Mesh(np.array(range(num_devices)), (num_devices, 1), axis_names=("fsdp", "tensor")))
+            auto_mesh = os.environ.get('XLA_AUTO_SPMD_MESH', '')
+            if auto_mesh:
+              mesh_shape = tuple(list(map(int,auto_mesh.split(','))))
+              assert len(mesh_shape) == 2
+              xs.set_global_mesh(xs.Mesh(np.array(range(num_devices)), mesh_shape, axis_names=("fsdp", "tensor")))
+            else:
+              xs.set_global_mesh(xs.Mesh(np.array(range(num_devices)), (num_devices, 1), axis_names=("fsdp", "tensor")))
 
     def _activate_neftune(self, model):
         r"""
@@ -1541,7 +1549,20 @@ class Trainer:
 
             self.accelerator.ddp_handler = DistributedDataParallelKwargs(**kwargs)
         elif self.is_xla_auto_sharding:
-
+            # TODO(yeounoh) add a `dict` config for PyTorch/XLA SPMD
+            xla_spmd_grad_chkpt = True
+            if xla_spmd_grad_chkpt:
+              if hasattr(model, 'transformer'):
+                for i, block in enumerate(model.transformer.h):
+                    # GPT-2, Neo
+                    xs.xla_sharding.apply_backward_optimization_barrier(model.transformer.h[i])
+                    model.transformer.h[i] = checkpoint_module(block)
+              elif hasattr(model, 'model'):
+                for i, block in enumerate(model.model.layers):
+                    # Llama, Gemma
+                    xs.xla_sharding.apply_backward_optimization_barrier(model.model.layers[i])
+                    model.model.layers[i] = checkpoint_module(block)
+              logger.info('Enable gradient checkpointing!')
 
         return model
 

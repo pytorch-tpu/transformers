@@ -1655,10 +1655,6 @@ class TrainingArguments:
         elif FSDPOption.FULL_SHARD in self.fsdp and FSDPOption.SHARD_GRAD_OP in self.fsdp:
             raise ValueError("`--fsdp full_shard` is not compatible with `--fsdp shard_grad_op`.")
 
-        if self.xla_auto_sharding is False:
-          # TODO(yeounoh) use formal TrainingArgs config
-          self.xla_auto_sharding = os.environ.get('XLA_AUTO_SPMD', '') == '1'
-
         if self.fsdp_config is None:
             self.fsdp_config = {}
 
@@ -1867,6 +1863,11 @@ class TrainingArguments:
                 f"{self.hub_model_id}).",
                 FutureWarning,
             )
+
+        # TODO(yeounoh) use formal TrainingArgs config
+        self.xla_auto_sharding = os.environ.get('XLA_AUTO_SPMD', '') == '1'
+        if self.xla_auto_sharding:
+            logger.info("Using xla_auto_sharding...")
 
     def __str__(self):
         self_as_dict = asdict(self)
