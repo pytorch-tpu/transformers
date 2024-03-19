@@ -48,10 +48,6 @@ from ...utils import (
 from ...utils.model_parallel_utils import assert_device_map, get_device_map
 from .configuration_gpt2 import GPT2Config
 
-import torch_xla.core.xla_model as xm
-import torch_xla.experimental.xla_sharding as xs
-import torch_xla.runtime as xr
-
 
 logger = logging.get_logger(__name__)
 
@@ -67,31 +63,6 @@ GPT2_PRETRAINED_MODEL_ARCHIVE_LIST = [
     # See all GPT-2 models at https://huggingface.co/models?filter=gpt2
 ]
 
-
-# For PyTorch/XLA's SPMD 2D sharding
-def init_spmd(model, config):
-    num_devices = xr.global_runtime_device_count()
-    if not config.spmd_auto_sharding:
-      model.spmd_debug = config.spmd_debug
-      model.spmd_model_axis = config.spmd_model_axis
-      model.spmd_data_axis = num_devices // model.spmd_model_axis
-      assert model.spmd_data_axis * model.spmd_model_axis == num_devices
-      model.spmd_iota_mesh = config.spmd_iota_mesh
-    else:
-      # TODO(yeounoh) remove this once enable the AUTO SPMD API.
-      os.environ['XLA_AUTO_SPMD'] = '1'
-
-def get_mesh(spmd_iota_mesh, ici_mesh_shape, dcn_mesh_shape=None):
-    if spmd_iota_mesh:
-        if dcn_mesh_shape is not None:
-            assert len(ici_mesh_shape) == len(dcn_mesh_shape)
-            for i in range(len(dcn_mesh_shape)):
-                ici_mesh_shape[i] *= dcn_mesh_shape[i]
-        num_devices = xr.global_runtime_device_count()
-        device_ids = torch.arange(num_devices)
-        return xs.Mesh(device_ids, ici_mesh_shape)
-    else:
-        return xs.HybridMesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape)
 
 def load_tf_weights_in_gpt2(model, config, gpt2_checkpoint_path):
     """Load tf checkpoints in a pytorch model"""
@@ -193,8 +164,6 @@ class GPT2Attention(nn.Module):
 
         self.pruned_heads = set()
 
-        init_spmd(self, config)
-
     def prune_heads(self, heads):
         if len(heads) == 0:
             return
@@ -211,15 +180,7 @@ class GPT2Attention(nn.Module):
         self.pruned_heads = self.pruned_heads.union(heads)
 
     def _attn(self, query, key, value, attention_mask=None, head_mask=None):
-        # query_states Batch Num_head Seq Head_dim
-        # key_states   Batch Num_head Kv_seq Head_dim
-        #attn_weights = torch.matmul(query, key.transpose(-1, -2))
-        attn_weights = torch.einsum('ijkl,ijhl->ijkh', query, key)
-
-        # attn weight (batch, head, seq_length, seq_length)
-        if not os.getenv('XLA_AUTO_SPMD'):
-          data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
-          xs.mark_sharding(attn_weights, data_model_mesh, (0,2,None,None))
+        attn_weights = torch.matmul(query, key.transpose(-1, -2))
 
         if self.scale_attn_weights:
             attn_weights = attn_weights / torch.full(
@@ -242,13 +203,9 @@ class GPT2Attention(nn.Module):
 
         if attention_mask is not None:
             # Apply the attention mask
-            if not os.getenv('XLA_AUTO_SPMD'):
-              xs.mark_sharding(attention_mask, data_model_mesh, (0,2,None,None))
             attn_weights = attn_weights + attention_mask
 
         attn_weights = nn.functional.softmax(attn_weights, dim=-1)
-        if not os.getenv('XLA_AUTO_SPMD'):
-          xs.mark_sharding(attn_weights, data_model_mesh, (0,2,None,None))
 
         # Downcast (if necessary) back to V's dtype (if in mixed-precision) -- No-Op otherwise
         attn_weights = attn_weights.type(value.dtype)
@@ -258,10 +215,7 @@ class GPT2Attention(nn.Module):
         if head_mask is not None:
             attn_weights = attn_weights * head_mask
 
-        # attn_weights Batch Num_head Seq Kv_seq
-        # value_states Batch Num_head Seq Head_dim
-        #attn_output = torch.matmul(attn_weights, value)
-        attn_output = torch.einsum('ijkl,ijlh->ijkh', attn_weights, value)
+        attn_output = torch.matmul(attn_weights, value)
 
         return attn_output, attn_weights
 
@@ -313,10 +267,7 @@ class GPT2Attention(nn.Module):
         if head_mask is not None:
             attn_weights = attn_weights * head_mask
 
-        # attn_weights Batch Num_head Seq Kv_seq
-        # value_states Batch Num_head Seq Head_dim
-        #attn_output = torch.matmul(attn_weights, value)
-        attn_output = torch.einsum('ijkl,ijlh->ijkh', attn_weights, value)
+        attn_output = torch.matmul(attn_weights, value)
 
         return attn_output, attn_weights
 
@@ -364,15 +315,6 @@ class GPT2Attention(nn.Module):
         key = self._split_heads(key, self.num_heads, self.head_dim)
         value = self._split_heads(value, self.num_heads, self.head_dim)
 
-        # Apply activation sharding, [data, None, model]
-        # query, key, value (batch, head, seq_length, head_features),
-        # as we are not using grouped query.
-        if not os.getenv('XLA_AUTO_SPMD'):
-          data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
-          xs.mark_sharding(query, data_model_mesh, (0,2,None,None))
-          xs.mark_sharding(key, data_model_mesh, (0,2,None,None))
-          xs.mark_sharding(value, data_model_mesh, (0,2,None,None))
-
         if layer_past is not None:
             past_key, past_value = layer_past
             key = torch.cat((past_key, key), dim=-2)
@@ -388,12 +330,9 @@ class GPT2Attention(nn.Module):
         else:
             attn_output, attn_weights = self._attn(query, key, value, attention_mask, head_mask)
 
-        # attn output (batch, head, seq_length, head_features)
         attn_output = self._merge_heads(attn_output, self.num_heads, self.head_dim)
         attn_output = self.c_proj(attn_output)
         attn_output = self.resid_dropout(attn_output)
-        if not os.getenv('XLA_AUTO_SPMD'):
-          xs.mark_sharding(attn_output, data_model_mesh, (0,1,2))
 
         outputs = (attn_output, present)
         if output_attentions:
@@ -411,19 +350,10 @@ class GPT2MLP(nn.Module):
         self.act = ACT2FN[config.activation_function]
         self.dropout = nn.Dropout(config.resid_pdrop)
 
-        init_spmd(self, config)
-
     def forward(self, hidden_states: Optional[Tuple[torch.FloatTensor]]) -> torch.FloatTensor:
         hidden_states = self.c_fc(hidden_states)
-        if not os.getenv('XLA_AUTO_SPMD'):
-          data_model_mesh = get_mesh(self.spmd_iota_mesh, (self.spmd_data_axis, 1, self.spmd_model_axis))
-          xs.mark_sharding(hidden_states, data_model_mesh, range(len(hidden_states.shape)))
         hidden_states = self.act(hidden_states)
-        if not os.getenv('XLA_AUTO_SPMD'):
-          xs.mark_sharding(hidden_states, data_model_mesh, range(len(hidden_states.shape)))
         hidden_states = self.c_proj(hidden_states)
-        if not os.getenv('XLA_AUTO_SPMD'):
-          xs.mark_sharding(hidden_states, data_model_mesh, range(len(hidden_states.shape)))
         hidden_states = self.dropout(hidden_states)
         return hidden_states
 
@@ -753,8 +683,6 @@ class GPT2Model(GPT2PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-        init_spmd(self, config)
-
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
         # Check validity of device_map
@@ -1028,8 +956,6 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()
 
-        init_spmd(self, config)
-
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
         warnings.warn(
@@ -1161,12 +1087,6 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             return_dict=return_dict,
         )
         hidden_states = transformer_outputs[0]
-        if not os.getenv('XLA_AUTO_SPMD'):
-          ici_mesh_shape = (self.spmd_data_axis, 1, self.spmd_model_axis)
-          spmd_dcn_parallelism = 1
-          dcn_mesh_shape = (spmd_dcn_parallelism, 1, 1)  # self.spmd_dcn_parallelism
-          mesh = get_mesh(self.spmd_iota_mesh, ici_mesh_shape, dcn_mesh_shape)
-          xs.mark_sharding(hidden_states, mesh, (0, 1, 2))
 
         # Set device for model parallelism
         if self.model_parallel:
@@ -1174,8 +1094,6 @@ class GPT2LMHeadModel(GPT2PreTrainedModel):
             hidden_states = hidden_states.to(self.lm_head.weight.device)
 
         lm_logits = self.lm_head(hidden_states)
-        if not os.getenv('XLA_AUTO_SPMD'):
-          xs.mark_sharding(lm_logits, mesh, (0, 1, 2))
 
         loss = None
         if labels is not None:

@@ -31,10 +31,8 @@ import sys
 import tempfile
 import time
 import warnings
-import torch_xla.debug.profiler as xp
 from collections.abc import Mapping
 from pathlib import Path
-from threading import Thread
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 
@@ -177,6 +175,8 @@ if is_torch_xla_available():
     import torch_xla.debug.metrics as met
     import torch_xla.distributed.spmd as xs
     import torch_xla.runtime as xr
+    import torch_xla.debug.profiler as xp
+    from threading import Thread  # used for profiling
 
 
 if is_sagemaker_mp_enabled():
@@ -362,7 +362,6 @@ class Trainer:
             logger.info(f"No `TrainingArguments` passed, using `output_dir={output_dir}`.")
             args = TrainingArguments(output_dir=output_dir)
         self.args = args
-
         # Seed must be set before instantiating the model when using model
         enable_full_determinism(self.args.seed) if self.args.full_determinism else set_seed(self.args.seed)
         self.hp_name = None
@@ -657,6 +656,14 @@ class Trainer:
             num_devices = xr.global_runtime_device_count()
             xs.set_global_mesh(xs.Mesh(np.array(range(num_devices)), (num_devices, 1), axis_names=("fsdp", "tensor")))
 
+        self.is_xla_auto_sharding = args.xla_auto_sharding
+        if  self.is_xla_auto_sharding:
+            # Prepare the SPMD mesh that is going to be used by the data loader and the auto-sharding pass.
+            # Input data is sharded by the data loader using `fsdp` axis, and the auto-sharding pass will consider
+            # both `fsdp` `tensor` axes for sharding.
+            num_devices = xr.global_runtime_device_count()
+            xs.set_global_mesh(xs.Mesh(np.array(range(num_devices)), (num_devices, 1), axis_names=("fsdp", "tensor")))
+
     def _activate_neftune(self, model):
         r"""
         Activates the neftune as presented in this code: https://github.com/neelsjain/NEFTune and paper:
@@ -854,8 +861,7 @@ class Trainer:
             dataloader_params["worker_init_fn"] = seed_worker
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
 
-        # TODO(jonbolin): Disabling Accelerate on the dataloader (`Unknown device SPMD:0`)
-        return DataLoader(train_dataset, **dataloader_params)
+        return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params))
 
     def _get_eval_sampler(self, eval_dataset: Dataset) -> Optional[torch.utils.data.Sampler]:
         # Deprecated code
@@ -1534,59 +1540,10 @@ class Trainer:
                 kwargs["broadcast_buffers"] = self.args.ddp_broadcast_buffers
 
             self.accelerator.ddp_handler = DistributedDataParallelKwargs(**kwargs)
+        elif self.is_xla_auto_sharding:
+
 
         return model
-
-    def _xla_sharded_dataloader(self, dataloader):
-        if is_torch_tpu_available():
-            import torch_xla.experimental.xla_sharding as xs
-            import torch_xla.runtime as xr
-            import torch_xla.distributed.parallel_loader as pl
-            num_devices = xr.global_runtime_device_count()
-            device_ids = np.arange(num_devices)
-
-            def get_mesh(ici_mesh_shape, dcn_mesh_shape=None):
-              if self.args.spmd_iota_mesh:
-                if dcn_mesh_shape is not None:
-                  assert len(ici_mesh_shape) == len(dcn_mesh_shape)
-                  for i in range(len(dcn_mesh_shape)):
-                    ici_mesh_shape[i] *= dcn_mesh_shape[i]
-                return xs.Mesh(device_ids, ici_mesh_shape)
-              else:
-                return xs.HybridMesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape)
-
-            sharding_spec = None
-            if self.args.spmd_batch_sharding:
-                mesh = get_mesh((num_devices, 1))
-                sharding_spec = xs.ShardingSpec(mesh, (0, 1))
-            elif self.args.spmd_tensor_sharding > 0 or self.args.spmd_2d_sharding > 0:
-                assert self.args.spmd_tensor_sharding == 0 or self.args.spmd_2d_sharding == 0
-                tensor = self.args.spmd_tensor_sharding + self.args.spmd_2d_sharding
-                fsdp = num_devices // tensor
-                mesh = get_mesh((fsdp, tensor))
-                partition_spec = (0, None)
-                sharding_spec = xs.ShardingSpec(mesh, partition_spec)
-
-            if self.args.spmd_auto_sharding:
-                print('XLA_USE_SPMD=', os.getenv('XLA_USE_SPMD'))
-                print('XLA_AUTO_SPMD=', os.getenv('XLA_AUTO_SPMD'))
-                auto_mesh = os.getenv('XLA_AUTO_SPMD_MESH')
-                print('XLA_AUTO_SPMD_MESH=', auto_mesh)
-                if auto_mesh:
-                    mesh_shape = tuple(list(map(int,auto_mesh.split(','))))
-                    mesh = get_mesh(mesh_shape)
-                    if mesh_shape[0] == 1 or mesh_shape[1] == 1:
-                      sharding_spec = xs.ShardingSpec(mesh, (0, 1))
-                    else:
-                      sharding_spec = xs.ShardingSpec(mesh, (0, None))
-                else:
-                    mesh = get_mesh((num_devices, 1))
-                    sharding_spec = xs.ShardingSpec(mesh, (0, 1))
-                print('input sharding mesh=', mesh.mesh_shape)
-            print('input sharding spec=', sharding_spec)
-            return pl.MpDeviceLoader(dataloader, self.args.device, input_sharding=sharding_spec, loader_prefetch_size=self.args.train_batch_size, device_prefetch_size=4)
-        else:
-            return dataloader
 
     def train(
         self,
@@ -1719,7 +1676,7 @@ class Trainer:
         logger.debug(f"Currently training with a batch size of: {self._train_batch_size}")
         # Data loader and number of training steps
         train_dataloader = self.get_train_dataloader()
-        if self.is_fsdp_xla_v2_enabled:
+        if self.is_fsdp_xla_v2_enabled or self.is_xla_auto_sharding:
             train_dataloader = tpu_spmd_dataloader(train_dataloader)
 
         # Setting up training control variables:
@@ -1992,16 +1949,20 @@ class Trainer:
                 steps_trained_in_current_epoch = 0
                 rng_to_sync = True
 
-            step = -1
             profile_step = int(os.environ.get('PROFILE_STEP', -1))
             profile_epoch = int(os.environ.get('PROFILE_EPOCH', -1))
             profile_duration = int(os.environ.get('PROFILE_DURATION_MS', 20000))
             profile_logdir = os.environ.get('PROFILE_LOGDIR', None)
+
+            step = -1
             for step, inputs in enumerate(epoch_iterator):
-                if step == 0 and epoch == 0:
-                    for k, v in inputs.items():
-                      print('  input sharding', str(k), (v.shape, torch_xla._XLAC._get_xla_sharding_spec(v)))
                 total_batched_samples += 1
+
+                if step == profile_step and epoch == profile_epoch:
+                    import tempfile
+                    xm.wait_device_ops()
+                    trace = lambda: xp.trace('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
+                    Thread(target=trace).start()
 
                 if self.args.include_num_input_tokens_seen:
                     main_input_name = getattr(self.model, "main_input_name", "input_ids")
@@ -2031,12 +1992,6 @@ class Trainer:
 
                 if step % args.gradient_accumulation_steps == 0:
                     self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
-
-                if step == profile_step and epoch == profile_epoch:
-                    import tempfile
-                    xm.wait_device_ops()
-                    trace = lambda: xp.trace('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
-                    Thread(target=trace).start()
 
                 with self.accelerator.accumulate(model):
                     tr_loss_step = self.training_step(model, inputs)
@@ -3074,8 +3029,6 @@ class Trainer:
             self.push_to_hub(commit_message="Model save")
 
     def _save_tpu(self, output_dir: Optional[str] = None):
-        #TODO(jonbolin): Re-enable
-        return
         output_dir = output_dir if output_dir is not None else self.args.output_dir
 
         logger.info(f"Saving model checkpoint to {output_dir}")
@@ -3117,8 +3070,6 @@ class Trainer:
         model.to(self.args.device)
 
     def _save(self, output_dir: Optional[str] = None, state_dict=None):
-        #TODO(jonbolin): Re-enable
-        return
         # If we are executing this function, we are the process zero, so we don't check for that.
         output_dir = output_dir if output_dir is not None else self.args.output_dir
         os.makedirs(output_dir, exist_ok=True)
@@ -3278,7 +3229,7 @@ class Trainer:
         self._memory_tracker.start()
 
         eval_dataloader = self.get_eval_dataloader(eval_dataset)
-        if self.is_fsdp_xla_v2_enabled:
+        if self.is_fsdp_xla_v2_enabled or self.is_xla_auto_sharding:
             eval_dataloader = tpu_spmd_dataloader(eval_dataloader)
 
         start_time = time.time()

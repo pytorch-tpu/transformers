@@ -1354,6 +1354,13 @@ class TrainingArguments:
         },
     )
 
+    xla_auto_sharding: Optional[bool] = field(
+        default=False,
+        metadata={
+            "help": "If set to `True`, will enable PyTorch/XLA SPMD auto-sharding."
+        },
+    )
+
     def __post_init__(self):
         # expand paths, if not os.makedirs("~/bar") will make directory
         # in the current directory instead of the actual home
@@ -1647,6 +1654,10 @@ class TrainingArguments:
             )
         elif FSDPOption.FULL_SHARD in self.fsdp and FSDPOption.SHARD_GRAD_OP in self.fsdp:
             raise ValueError("`--fsdp full_shard` is not compatible with `--fsdp shard_grad_op`.")
+
+        if self.xla_auto_sharding is False:
+          # TODO(yeounoh) use formal TrainingArgs config
+          self.xla_auto_sharding = os.environ.get('XLA_AUTO_SPMD', '') == '1'
 
         if self.fsdp_config is None:
             self.fsdp_config = {}
