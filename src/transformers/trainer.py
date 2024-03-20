@@ -1552,6 +1552,7 @@ class Trainer:
             # TODO(yeounoh) add a `dict` config for PyTorch/XLA SPMD
             xla_spmd_grad_chkpt = True
             if xla_spmd_grad_chkpt:
+              from torch_xla.distributed.fsdp import checkpoint_module
               if hasattr(model, 'transformer'):
                 for i, block in enumerate(model.transformer.h):
                     # GPT-2, Neo
@@ -1563,6 +1564,16 @@ class Trainer:
                     xs.xla_sharding.apply_backward_optimization_barrier(model.model.layers[i])
                     model.model.layers[i] = checkpoint_module(block)
               logger.info('Enable gradient checkpointing!')
+
+            # Patch `xm.optimizer_step` should not reduce gradients in this case,
+            # as FSDP does not need gradient reduction over sharded parameters.
+            def patched_optimizer_step(optimizer, barrier=False, optimizer_args={}):
+                loss = optimizer.step(**optimizer_args)
+                if barrier:
+                    xm.mark_step()
+                return loss
+
+            xm.optimizer_step = patched_optimizer_step
 
         return model
 
@@ -1594,6 +1605,10 @@ class Trainer:
 
         # memory metrics - must set up as early as possible
         self._memory_tracker.start()
+
+        if is_torch_xla_available():
+            server = xp.start_server(9012)
+            logger.info('Profiling server started: {str(server)}')
 
         args = self.args
 
