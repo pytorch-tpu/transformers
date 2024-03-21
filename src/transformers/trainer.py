@@ -1550,7 +1550,7 @@ class Trainer:
             self.accelerator.ddp_handler = DistributedDataParallelKwargs(**kwargs)
         elif self.is_xla_auto_sharding:
             # TODO(yeounoh) add a `dict` config for PyTorch/XLA SPMD
-            xla_spmd_grad_chkpt = True
+            xla_spmd_grad_chkpt = False
             if xla_spmd_grad_chkpt:
               from torch_xla.distributed.fsdp import checkpoint_module
               if hasattr(model, 'transformer'):
