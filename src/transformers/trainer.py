@@ -531,10 +531,10 @@ class Trainer:
         self.xla_autocast = self.args.xla_autocast
 
         self.chkpt_manager = None
+        torch.distributed.init_process_group('gloo', init_method='xla://')
         if self.args.checkpoint_manager_path:
             # TODO(jonbolin): Currently we manually initialize the process
             # group in SPMD mode. This should be moved behind Accelerate.
-            torch.distributed.init_process_group('gloo', init_method='xla://')
             self.chkpt_manager = CheckpointManager(
                 path=self.args.checkpoint_manager_path,
                 save_interval=float('inf'),  # Defer to the HF save strategy
@@ -815,7 +815,7 @@ class Trainer:
 
         # TODO(jonbolin): Disabling Accelerate on the dataloader. Accelerate does not
         # currently support SPMD-mode
-        return DataLoader(train_dataset, **dataloader_params)
+        return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params))
 
     def _get_eval_sampler(self, eval_dataset: Dataset) -> Optional[torch.utils.data.Sampler]:
         # Deprecated code
@@ -1444,12 +1444,9 @@ class Trainer:
         if is_torch_tpu_available():
             import torch_xla.experimental.xla_sharding as xs
             import torch_xla.distributed.parallel_loader as pl
-            sharding_spec = xs.ShardingSpec(self.args.spmd_mesh, (('dcn', 'data'), None))
-            # TODO(jonbolin): Once integrated with Accelerate, we can use the Accelerate-prepared
-            # MpDeviceLoader instead of manually adding sharding and adding a dataset attribute.
-            loader = pl.MpDeviceLoader(dataloader, self.args.device, input_sharding=sharding_spec, loader_prefetch_size=self.args.train_batch_size, device_prefetch_size=4)
-            loader.dataset = dataloader.dataset
-            return loader
+            sharding_spec = xs.ShardingSpec(self.args.spmd_mesh, (('dcn', 'data'), None), minibatch=True)
+            dataloader._parallel_loader_kwargs['input_sharding'] = sharding_spec
+            return dataloader
         else:
             return dataloader
 
