@@ -53,6 +53,9 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 
+import torch_xla
+import torch_xla.distributed.spmd as xs
+import torch_xla.runtime as xr
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.46.0.dev0")
@@ -146,6 +149,22 @@ class ModelArguments:
             "help": (
                 "It is an option to create the model as an empty shell, then only materialize its parameters when the pretrained weights are loaded. "
                 "set True will benefit LLM loading time and RAM consumption."
+            )
+        },
+    )
+    flash_attention: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Enable PyTorch/XLA Pallas Flash Attention"
+            )
+        },
+    )
+    spmd_2d_sharding: int = field(
+        default=0,
+        metadata={
+            "help": (
+                "Will apply XLA SPMD to 2D sharding, i.e., weights + activations, and spmd_2d_sharding specifies the model dimension"
             )
         },
     )
@@ -418,6 +437,9 @@ def main():
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
 
+    # Pass the flash attention toggle to the model config
+    config.flash_attention = model_args.flash_attention
+
     if model_args.model_name_or_path:
         torch_dtype = (
             model_args.torch_dtype
@@ -437,6 +459,9 @@ def main():
         )
     else:
         model = AutoModelForCausalLM.from_config(config, trust_remote_code=model_args.trust_remote_code)
+        # Set the model dtype since we can no longer rely on USE_XLA_BF16.
+        if model_args.torch_dtype is not None:
+            model = model.to(getattr(torch, model_args.torch_dtype))
         n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
         logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
 
@@ -579,6 +604,48 @@ def main():
             labels = labels[:, 1:].reshape(-1)
             preds = preds[:, :-1].reshape(-1)
             return metric.compute(predictions=preds, references=labels)
+
+    # Apply 2D sharding
+    if model_args.spmd_2d_sharding > 0:
+        num_devices = xr.global_runtime_device_count()
+        tensor_axis = model_args.spmd_2d_sharding
+        fsdp_axis = num_devices // tensor_axis
+        mesh_shape = (fsdp_axis, tensor_axis)
+        spmd_mesh = xs.Mesh(range(num_devices), mesh_shape, ('fsdp', 'tensor'))
+        xs.set_global_mesh(spmd_mesh)
+
+        model.to("xla")
+        for name, param in model.named_parameters():
+            print('> [2D] Sharding tensor', name, param.shape)
+
+            # Here we intentionally skip layernorm and moe.gate weights given they are small.
+            if 'embed_tokens' in name:
+                xs.mark_sharding(param, spmd_mesh, ('fsdp', 'tensor'))  # needed to have activations fully sharded.
+            elif 'q_proj' in name or 'k_proj' in name or 'v_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('tensor', 'fsdp'))
+            elif 'o_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('fsdp', 'tensor'))
+            elif 'gate_proj' in name or 'up_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('tensor', 'fsdp'))
+            elif 'down_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('fsdp', 'tensor'))
+            elif 'lm_head' in name:
+                xs.mark_sharding(param, spmd_mesh, (('tensor', 'fsdp'), None))  # keep this fsdp.
+
+            print(f'{name} {torch_xla._XLAC._get_xla_sharding_spec(param)}')
+
+        for i, block in enumerate(model.model.layers):
+            xs.apply_backward_optimization_barrier(model.model.layers[i])
+
+        print("Applying gradient checkpointing")
+        if model.config.use_cache:
+            logger.warning_once(
+                "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
+            )
+            model.config.use_cache = False
+        from torch_xla.distributed.fsdp import checkpoint_module
+        for i, block in enumerate(model.model.layers):
+            model.model.layers[i] = checkpoint_module(block)
 
     # Initialize our Trainer
     trainer = Trainer(
