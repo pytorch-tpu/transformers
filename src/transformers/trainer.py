@@ -1574,12 +1574,12 @@ class Trainer:
 
         len_dataloader = None
         num_train_tokens = None
-        if has_length(train_dataloader):
+        if has_length(train_dataloader): # true
             len_dataloader = len(train_dataloader)
             num_update_steps_per_epoch = len_dataloader // args.gradient_accumulation_steps
             num_update_steps_per_epoch = max(num_update_steps_per_epoch, 1)
             num_examples = self.num_examples(train_dataloader)
-            if args.max_steps > 0:
+            if args.max_steps > 0: # false
                 max_steps = args.max_steps
                 num_train_epochs = args.max_steps // num_update_steps_per_epoch + int(
                     args.max_steps % num_update_steps_per_epoch > 0
@@ -1612,7 +1612,7 @@ class Trainer:
                 f" {args.max_steps}"
             )
 
-        if DebugOption.UNDERFLOW_OVERFLOW in self.args.debug:
+        if DebugOption.UNDERFLOW_OVERFLOW in self.args.debug: # false
             if self.args.n_gpu > 1:
                 # nn.DataParallel(model) replicates the model, creating new variables and module
                 # references registered here no longer work on other gpus, breaking the module
@@ -1673,7 +1673,7 @@ class Trainer:
             self.create_optimizer_and_scheduler(num_training_steps=max_steps)
 
         # prepare using `accelerator` prepare
-        if use_accelerator_prepare:
+        if use_accelerator_prepare: # true
             self.model.train()
             if hasattr(self.lr_scheduler, "step"):
                 if self.use_apex:
@@ -1733,7 +1733,7 @@ class Trainer:
         # Check if continuing training from a checkpoint
         if (self.chkpt_manager and self.chkpt_manager.all_steps()) or resume_from_checkpoint is not None and os.path.isfile(
             os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME)
-        ):
+        ): # false
             if self.chkpt_manager:
                 max_step = max(self.chkpt_manager.all_steps())
                 # TODO(jonbolin): We need to prime the optimizer state to allow for sharding propagation.
@@ -1797,7 +1797,7 @@ class Trainer:
         self.control = self.callback_handler.on_train_begin(args, self.state, self.control)
 
         # Skip the first epochs_trained epochs to get the random state of the dataloader at the right point.
-        if not args.ignore_data_skip:
+        if not args.ignore_data_skip: # false
             for epoch in range(epochs_trained):
                 sampler = get_dataloader_sampler(train_dataloader)
                 sampler_kinds = [RandomSampler]
@@ -1828,7 +1828,7 @@ class Trainer:
                 len(epoch_iterator)
                 if len_dataloader is not None
                 else args.max_steps * args.gradient_accumulation_steps
-            )
+            ) # (len_dataloader is not None) is true
             self.control = self.callback_handler.on_epoch_begin(args, self.state, self.control)
 
             if epoch == epochs_trained and resume_from_checkpoint is not None and steps_trained_in_current_epoch == 0:
@@ -1836,7 +1836,7 @@ class Trainer:
 
             rng_to_sync = False
             steps_skipped = 0
-            if steps_trained_in_current_epoch > 0:
+            if steps_trained_in_current_epoch > 0: # false
                 epoch_iterator = skip_first_batches(epoch_iterator, steps_trained_in_current_epoch)
                 steps_skipped = steps_trained_in_current_epoch
                 steps_trained_in_current_epoch = 0
@@ -1847,6 +1847,9 @@ class Trainer:
             profile_epoch = int(os.environ.get('PROFILE_EPOCH', -1))
             profile_duration = int(os.environ.get('PROFILE_DURATION_MS', 20000))
             profile_logdir = os.environ.get('PROFILE_LOGDIR', None)
+            xla_tracing_time = -1
+            xla_avg_step_time_starting_step = 2
+            xla_avg_step_time_begin_time = -1
             for step, inputs in enumerate(epoch_iterator):
                 if self.state.global_step == 0:
                     print('input sharding', {k: (v.shape, torch_xla._XLAC._get_xla_sharding_spec(v)) for k, v in inputs.items()})
@@ -1965,6 +1968,13 @@ class Trainer:
                             f"Tracing time ({tracing_time}s) too close to overall step wall time ({step_wall_time}s)"
                         metrics = {'step_wall_time': step_wall_time, 'tracing_time': tracing_time}
                         self.log(metrics)
+                
+                if self.args.xla_measure_avg_step_time:
+                    if step == xla_avg_step_time_starting_step:
+                        xm.wait_device_ops()
+                        xla_avg_step_time_begin_time = time.time()
+                    if step == xla_avg_step_time_starting_step + 1:
+                        xla_tracing_time = time.time() - xla_avg_step_time_begin_time
 
                 if step == profile_step and epoch == profile_epoch:
                     # Wait until device execution catches up to tracing before triggering the profile. This will
@@ -1976,6 +1986,13 @@ class Trainer:
 
                 if self.control.should_epoch_stop or self.control.should_training_stop:
                     break
+
+            if self.args.xla_measure_avg_step_time:
+                num_step = len(epoch_iterator)-xla_avg_step_time_starting_step
+                xla_avg_step_time = (time.time()-xla_avg_step_time_begin_time-xla_tracing_time)/num_step
+                print(f'num_step={num_step}, xla_avg_step_time_begin_time={xla_avg_step_time_begin_time}, xla_tracing_time={xla_tracing_time}, xla_avg_step_time={xla_avg_step_time}')
+                metrics = {'xla_avg_step_time': xla_avg_step_time}
+                self.log(metrics)
 
             if step < 0:
                 logger.warning(
