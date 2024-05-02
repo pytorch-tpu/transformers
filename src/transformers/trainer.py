@@ -1985,9 +1985,15 @@ class Trainer:
                     xp.trace_detached('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
 
                 if self.control.should_epoch_stop or self.control.should_training_stop:
+                    # PyTorch/XLA relies on the data loader to insert the mark_step for
+                    # each step. Since we are breaking the loop early, we need to manually
+                    # insert the mark_step here.
+                    if is_torch_xla_available():
+                        xm.mark_step()
                     break
 
             if self.args.xla_measure_avg_step_time:
+                xm.wait_device_ops()
                 num_step = len(epoch_iterator)-xla_avg_step_time_starting_step
                 xla_avg_step_time = (time.time()-xla_avg_step_time_begin_time-xla_tracing_time)/num_step
                 metrics = {'xla_avg_step_time': xla_avg_step_time}
