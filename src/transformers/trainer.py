@@ -1988,7 +1988,7 @@ class Trainer:
                     # PyTorch/XLA relies on the data loader to insert the mark_step for
                     # each step. Since we are breaking the loop early, we need to manually
                     # insert the mark_step here.
-                    if is_torch_xla_available():
+                    if is_torch_tpu_available():
                         xm.mark_step()
                     break
 
