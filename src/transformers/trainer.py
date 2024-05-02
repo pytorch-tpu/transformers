@@ -1990,7 +1990,6 @@ class Trainer:
             if self.args.xla_measure_avg_step_time:
                 num_step = len(epoch_iterator)-xla_avg_step_time_starting_step
                 xla_avg_step_time = (time.time()-xla_avg_step_time_begin_time-xla_tracing_time)/num_step
-                print(f'num_step={num_step}, xla_avg_step_time_begin_time={xla_avg_step_time_begin_time}, xla_tracing_time={xla_tracing_time}, xla_avg_step_time={xla_avg_step_time}')
                 metrics = {'xla_avg_step_time': xla_avg_step_time}
                 self.log(metrics)
 
