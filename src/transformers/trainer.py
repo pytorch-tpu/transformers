@@ -2223,6 +2223,9 @@ class Trainer:
             profile_epoch = int(os.environ.get('PROFILE_EPOCH', -1))
             profile_duration = int(os.environ.get('PROFILE_DURATION_MS', 20000))
             profile_logdir = os.environ.get('PROFILE_LOGDIR', None)
+            xla_tracing_time = -1
+            xla_avg_step_time_starting_step = 2
+            xla_avg_step_time_begin_time = -1
             for step, inputs in enumerate(epoch_iterator):
                 if self.state.global_step == 0:
                     print('input sharding', {k: (v.shape, torch_xla._XLAC._get_xla_sharding_spec(v)) for k, v in inputs.items()})
@@ -2364,6 +2367,13 @@ class Trainer:
                             f"Tracing time ({tracing_time}s) too close to overall step wall time ({step_wall_time}s)"
                         metrics = {'step_wall_time': step_wall_time, 'tracing_time': tracing_time}
                         self.log(metrics)
+                
+                if self.args.xla_measure_avg_step_time:
+                    if step == xla_avg_step_time_starting_step:
+                        xm.wait_device_ops()
+                        xla_avg_step_time_begin_time = time.time()
+                    if step == xla_avg_step_time_starting_step + 1:
+                        xla_tracing_time = time.time() - xla_avg_step_time_begin_time
 
                 if step == profile_step and epoch == profile_epoch:
                     # Wait until device execution catches up to tracing before triggering the profile. This will
@@ -2380,6 +2390,13 @@ class Trainer:
                     if is_torch_xla_available():
                         xm.mark_step()
                     break
+
+            if self.args.xla_measure_avg_step_time:
+                xm.wait_device_ops()
+                num_step = len(epoch_iterator)-xla_avg_step_time_starting_step
+                xla_avg_step_time = (time.time()-xla_avg_step_time_begin_time-xla_tracing_time)/num_step
+                metrics = {'xla_avg_step_time': xla_avg_step_time}
+                self.log(metrics)
 
             if step < 0:
                 logger.warning(
