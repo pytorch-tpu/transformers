@@ -104,6 +104,10 @@ if __name__ == "__main__":
         if model_config.torch_dtype in ["auto", None]
         else getattr(torch, model_config.torch_dtype)
     )
+
+    # hack now
+    torch_dtype = torch.bfloat16
+    print(f"overwrite {torch_dtype=}")
     quantization_config = get_quantization_config(model_config)
     model_kwargs = dict(
         revision=model_config.model_revision,
@@ -156,7 +160,7 @@ if __name__ == "__main__":
 
     ds = ds.map(
         process,
-        num_proc=multiprocessing.cpu_count(),
+        num_proc=1,
         load_from_cache_file=False,
     )
     train_dataset = ds[args.dataset_train_split]
