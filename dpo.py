@@ -70,7 +70,7 @@ if TRL_USE_RICH:
 
 import torch
 from datasets import load_dataset
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
 from trl import (
     DPOConfig,
@@ -82,13 +82,42 @@ from trl import (
     get_quantization_config,
 )
 
+from typing import Optional
+from dataclasses import dataclass, field
+
 
 if TRL_USE_RICH:
     logging.basicConfig(format=FORMAT, datefmt="[%X]", handlers=[RichHandler()], level=logging.INFO)
 
 
+@dataclass
+class ModelArguments(ModelConfig):
+    config_name: Optional[str] = field(
+        default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
+    )
+
+    flash_attention: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Enable PyTorch/XLA Pallas Flash Attention"
+            )
+        },
+    )
+
+    static: bool = field(
+        default=True,
+        metadata={
+            "help": (
+                "Make Mixtral's MoE static"
+            )
+        },
+    )
+
+
+
 if __name__ == "__main__":
-    parser = TrlParser((DPOScriptArguments, DPOConfig, ModelConfig))
+    parser = TrlParser((DPOScriptArguments, DPOConfig, ModelArguments))
     args, training_args, model_config = parser.parse_args_and_config()
 
     # Force use our print callback
@@ -105,9 +134,6 @@ if __name__ == "__main__":
         else getattr(torch, model_config.torch_dtype)
     )
 
-    # hack now
-    torch_dtype = torch.bfloat16
-    print(f"overwrite {torch_dtype=}")
     quantization_config = get_quantization_config(model_config)
     model_kwargs = dict(
         revision=model_config.model_revision,
@@ -118,12 +144,46 @@ if __name__ == "__main__":
         device_map=get_kbit_device_map() if quantization_config is not None else None,
         quantization_config=quantization_config,
     )
-    model = AutoModelForCausalLM.from_pretrained(model_config.model_name_or_path, **model_kwargs)
-    peft_config = get_peft_config(model_config)
-    if peft_config is None:
-        model_ref = AutoModelForCausalLM.from_pretrained(model_config.model_name_or_path, **model_kwargs)
+
+    if model_config.config_name:
+        config = AutoConfig.from_pretrained(model_config.config_name, **model_kwargs)
+
+        # Pass the custom configs to the model config
+        config.flash_attention = model_config.flash_attention
+        config.static = model_config.static
+
+        model = AutoModelForCausalLM.from_config(config)
+
+        # Set the model dtype since we can no longer rely on USE_XLA_BF16.
+        if torch_dtype is not None:
+            model = model.to(torch_dtype)
+        peft_config = get_peft_config(model_config)
+        if peft_config is None:
+            model_ref = AutoModelForCausalLM.from_config(config)
+            if torch_dtype is not None:
+                model_ref = model_ref.to(torch_dtype)
+        else:
+            model_ref = None
     else:
-        model_ref = None
+        model = AutoModelForCausalLM.from_pretrained(model_config.model_name_or_path, **model_kwargs)
+        peft_config = get_peft_config(model_config)
+        if peft_config is None:
+            model_ref = AutoModelForCausalLM.from_pretrained(model_config.model_name_or_path, **model_kwargs)
+        else:
+            model_ref = None
+
+    active_weight = 0
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        numel = param.numel()
+        # print(f"{name}: {numel} params")
+        if 'block_sparse_moe.experts' in name:
+            active_weight += numel / config.num_local_experts * config.num_experts_per_tok
+        else:
+            active_weight += numel
+    print(f"Active weight: {active_weight:,}")
+
     tokenizer = AutoTokenizer.from_pretrained(model_config.model_name_or_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
