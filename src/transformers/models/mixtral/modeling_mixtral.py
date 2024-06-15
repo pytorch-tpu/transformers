@@ -69,6 +69,7 @@ if is_torch_fx_available():
     _prepare_4d_causal_attention_mask = torch.fx.wrap(_prepare_4d_causal_attention_mask)
 
 import torch_xla.debug.profiler as xp
+import torch_xla.distributed.spmd as xs
 
 logger = logging.get_logger(__name__)
 
@@ -388,7 +389,10 @@ class MixtralAttention(nn.Module):
             # Integrated with PyTorch/XLA Pallas Flash Attention:
             from torch_xla.experimental.custom_kernel import flash_attention
             query_states /= math.sqrt(self.head_dim)
-            attn_output = flash_attention(query_states, key_states, value_states, causal=True, partition_spec=('fsdp', None, None, None))
+            partition_spec = None
+            if xs.get_global_mesh() is not None:
+                partition_spec = ('fsdp', None, None, None)
+            attn_output = flash_attention(query_states, key_states, value_states, causal=True, partition_spec=partition_spec)
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
             raise ValueError(
