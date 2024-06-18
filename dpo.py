@@ -105,6 +105,16 @@ class ModelArguments(ModelConfig):
         },
     )
 
+    low_cpu_mem_usage: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "It is an option to create the model as an empty shell, then only materialize its parameters when the pretrained weights are loaded. "
+                "set True will benefit LLM loading time and RAM consumption."
+            )
+        },
+    )
+
     static: bool = field(
         default=True,
         metadata={
@@ -143,6 +153,7 @@ if __name__ == "__main__":
         use_cache=False if training_args.gradient_checkpointing else True,
         device_map=get_kbit_device_map() if quantization_config is not None else None,
         quantization_config=quantization_config,
+        low_cpu_mem_usage=model_config.low_cpu_mem_usage,
     )
 
     if model_config.config_name:
@@ -157,18 +168,26 @@ if __name__ == "__main__":
         # Set the model dtype since we can no longer rely on USE_XLA_BF16.
         if torch_dtype is not None:
             model = model.to(torch_dtype)
+
+        print("model initialization finished")
         peft_config = get_peft_config(model_config)
         if peft_config is None:
             model_ref = AutoModelForCausalLM.from_config(config)
             if torch_dtype is not None:
                 model_ref = model_ref.to(torch_dtype)
+            print("model_ref initialization finished")
         else:
             model_ref = None
     else:
         model = AutoModelForCausalLM.from_pretrained(model_config.model_name_or_path, **model_kwargs)
+        print("model initialization finished")
+
+        config = model.config
+
         peft_config = get_peft_config(model_config)
         if peft_config is None:
             model_ref = AutoModelForCausalLM.from_pretrained(model_config.model_name_or_path, **model_kwargs)
+            print("model_ref initialization finished")
         else:
             model_ref = None
 
