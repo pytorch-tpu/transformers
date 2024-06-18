@@ -681,7 +681,8 @@ class Trainer:
             # Prepare the SPMD mesh that is going to be used by the data loader and the FSDPv2 wrapper.
             # Tensor axis is just a placeholder where it will not be used in FSDPv2.
             num_devices = xr.global_runtime_device_count()
-            xs.set_global_mesh(xs.Mesh(np.array(range(num_devices)), (num_devices, 1), axis_names=("fsdp", "tensor")))
+            seq_parallelism = self.args.seq_parallelism
+            xs.set_global_mesh(xs.Mesh(np.array(range(num_devices)), (num_devices // seq_parallelism, seq_parallelism), axis_names=("fsdp", "seq")))
 
     def _activate_neftune(self, model):
         r"""

@@ -764,6 +764,7 @@ class TrainingArguments:
         },
     )
 
+    seq_parallelism: int = field(default=1, metadata={"help": "sequence parallelism to use with SPMD training"})
     do_train: bool = field(default=False, metadata={"help": "Whether to run training."})
     do_eval: bool = field(default=False, metadata={"help": "Whether to run eval on the dev set."})
     do_predict: bool = field(default=False, metadata={"help": "Whether to run predictions on the test set."})
