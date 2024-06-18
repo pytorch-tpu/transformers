@@ -131,7 +131,9 @@ class ModelArguments(ModelConfig):
 
 
 if __name__ == "__main__":
+    print("parse")
     parser = TrlParser((DPOScriptArguments, DPOConfig, ModelArguments))
+    print("parser.parse")
     args, training_args, model_config = parser.parse_args_and_config()
 
     # Force use our print callback
@@ -142,13 +144,16 @@ if __name__ == "__main__":
     ################
     # Model & Tokenizer
     ################
+    print("torch_dtype")
     torch_dtype = (
         model_config.torch_dtype
         if model_config.torch_dtype in ["auto", None]
         else getattr(torch, model_config.torch_dtype)
     )
 
+    print("quantization")
     quantization_config = get_quantization_config(model_config)
+    print("mode_kwargs")
     model_kwargs = dict(
         revision=model_config.model_revision,
         trust_remote_code=model_config.trust_remote_code,
