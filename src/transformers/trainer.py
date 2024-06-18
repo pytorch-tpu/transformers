@@ -1715,8 +1715,12 @@ class Trainer:
                         raise ValueError("Something went wrong, the output of the model shouldn't be `None`")
                     xs.mark_sharding(real_output, mesh, ("fsdp", None, None))
 
+                num_devices = xr.global_runtime_device_count()
+                mesh = xs.Mesh(range(num_devices), (num_devices,), ('fsdp',))
+
                 self.model = model = FSDPv2(
                     model,
+                    mesh=mesh,
                     shard_output=shard_output,
                     auto_wrap_policy=auto_wrap_policy,
                     auto_wrapper_callable=auto_wrapper_callable,
