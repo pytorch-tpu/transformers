@@ -167,6 +167,7 @@ if __name__ == "__main__":
         config.flash_attention = model_config.flash_attention
         config.static = model_config.static
 
+        print("model initialization started")
         model = AutoModelForCausalLM.from_config(config)
 
         # Set the model dtype since we can no longer rely on USE_XLA_BF16.
@@ -176,6 +177,7 @@ if __name__ == "__main__":
         print("model initialization finished")
         peft_config = get_peft_config(model_config)
         if peft_config is None:
+            print("model_ref initialization started")
             model_ref = AutoModelForCausalLM.from_config(config)
             if torch_dtype is not None:
                 model_ref = model_ref.to(torch_dtype)
@@ -183,6 +185,7 @@ if __name__ == "__main__":
         else:
             model_ref = None
     else:
+        print("model initialization started")
         model_name_or_path = model_config.overwrite_model_name_or_path if model_config.overwrite_model_name_or_path else model_config.model_name_or_path 
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
         print("model initialization finished")
@@ -191,6 +194,7 @@ if __name__ == "__main__":
 
         peft_config = get_peft_config(model_config)
         if peft_config is None:
+            print("model_ref initialization started")
             model_ref = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
             print("model_ref initialization finished")
         else:
