@@ -96,6 +96,10 @@ class ModelArguments(ModelConfig):
         default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
     )
 
+    overwrite_model_name_or_path: Optional[str] = field(
+        default=None, metadata={"help": "Overwriten pretrained config name or path if not the same as model_name"}
+    )
+
     flash_attention: bool = field(
         default=False,
         metadata={
@@ -179,14 +183,15 @@ if __name__ == "__main__":
         else:
             model_ref = None
     else:
-        model = AutoModelForCausalLM.from_pretrained(model_config.model_name_or_path, **model_kwargs)
+        model_name_or_path = model_config.overwrite_model_name_or_path if model_config.overwrite_model_name_or_path else model_config.model_name_or_path 
+        model = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
         print("model initialization finished")
 
         config = model.config
 
         peft_config = get_peft_config(model_config)
         if peft_config is None:
-            model_ref = AutoModelForCausalLM.from_pretrained(model_config.model_name_or_path, **model_kwargs)
+            model_ref = AutoModelForCausalLM.from_pretrained(model_name_or_path, **model_kwargs)
             print("model_ref initialization finished")
         else:
             model_ref = None
