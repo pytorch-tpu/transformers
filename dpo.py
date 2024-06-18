@@ -101,7 +101,7 @@ class ModelArguments(ModelConfig):
     )
 
     flash_attention: bool = field(
-        default=False,
+        default=True,
         metadata={
             "help": (
                 "Enable PyTorch/XLA Pallas Flash Attention"
