@@ -69,6 +69,7 @@ if TRL_USE_RICH:
     from rich.logging import RichHandler
 
 import torch
+import torch_xla.core.xla_model as xm
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig
 
@@ -173,7 +174,9 @@ if __name__ == "__main__":
         config.static = model_config.static
 
         print("model initialization started")
-        model = AutoModelForCausalLM.from_config(config)
+        with torch.device("meta"):
+            model = AutoModelForCausalLM.from_config(config).to_empty(device=xm.xla_device())
+        # model = AutoModelForCausalLM.from_config(config)
 
         # Set the model dtype since we can no longer rely on USE_XLA_BF16.
         if torch_dtype is not None:
@@ -183,7 +186,9 @@ if __name__ == "__main__":
         peft_config = get_peft_config(model_config)
         if peft_config is None:
             print("model_ref initialization started")
-            model_ref = AutoModelForCausalLM.from_config(config)
+            with torch.device("meta"):
+                model_ref = AutoModelForCausalLM.from_config(config).to_empty(device=xm.xla_device())
+            # model_ref = AutoModelForCausalLM.from_config(config)
             if torch_dtype is not None:
                 model_ref = model_ref.to(torch_dtype)
             print("model_ref initialization finished")
