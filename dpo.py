@@ -175,7 +175,7 @@ if __name__ == "__main__":
         print("model initialization started")
         with torch.device('meta'):
             model = AutoModelForCausalLM.from_config(config)
-        model = model.to_empty("cpu")
+        model = model.to_empty(device="cpu")
 
         # Set the model dtype since we can no longer rely on USE_XLA_BF16.
         if torch_dtype is not None:
@@ -187,7 +187,7 @@ if __name__ == "__main__":
             print("model_ref initialization started")
             with torch.device('meta'):
                 model_ref = AutoModelForCausalLM.from_config(config)
-            model_ref = model_ref.to_empty("cpu")
+            model_ref = model_ref.to_empty(device="cpu")
             if torch_dtype is not None:
                 model_ref = model_ref.to(torch_dtype)
             print("model_ref initialization finished")
