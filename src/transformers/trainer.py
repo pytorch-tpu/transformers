@@ -162,6 +162,7 @@ from .utils import (
     strtobool,
 )
 from .utils.quantization_config import QuantizationMethod
+import gc
 
 
 DEFAULT_CALLBACKS = [DefaultFlowCallback]
@@ -1721,13 +1722,17 @@ class Trainer:
                     auto_wrap_policy=auto_wrap_policy,
                     auto_wrapper_callable=auto_wrapper_callable,
                 )
+                gc.collect()
             else:
+                self.model = model = model.to_empty(device="cpu")
+                model.apply(model._init_weights)
                 self.model = model = FSDP(
                     model,
                     auto_wrap_policy=auto_wrap_policy,
                     auto_wrapper_callable=auto_wrapper_callable,
                     **fsdp_kwargs,
                 )
+                gc.collect()
 
             # Patch `xm.optimizer_step` should not reduce gradients in this case,
             # as FSDP does not need gradient reduction over sharded parameters.
