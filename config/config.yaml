@@ -2,6 +2,8 @@ defaults:
 - _self_
 - blank_model
 
+exp_name: moe_trial
+
 config_path: null
 
 # random seed for batch sampling
@@ -40,7 +42,7 @@ wandb:
 # to create the local run directory and cache models/datasets,
 #   we will try each of these directories in order; if none exist,
 #   we will create the last one and use it
-local_run_dir: /tmp/
+local_dirs: /tmp
 
 # whether or not to generate samples during evaluation; disable for FSDP/TensorParallel
 #   is recommended, because they are slow
