@@ -28,7 +28,7 @@ use_synthetic_data: true
 report_metrics_freq: 3
 
 use_cache: true
-cache_local_dir: ~/.cache/
+cache_local_dir: null
 
 # which dataset(s) to train on; can pass a list like datasets=[hh,shp]
 datasets:
