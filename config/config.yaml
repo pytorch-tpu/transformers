@@ -1,6 +1,6 @@
 defaults:
 - _self_
-- blank_model
+- model: blank_model
 
 exp_name: moe_trial
 
