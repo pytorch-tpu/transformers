@@ -251,7 +251,6 @@ def get_batch_loss_metrics(
         metrics[f"{prefix}logps/chosen"] = policy_chosen_logps.detach().mean()
         metrics[f"{prefix}logits/rejected"] = policy_rejected_logits.detach().mean()
         metrics[f"{prefix}logits/chosen"] = policy_chosen_logits.detach().mean()
-        metrics = {}
 
         return losses.mean(), metrics
 
