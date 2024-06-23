@@ -61,7 +61,7 @@ def get_local_run_dir(exp_name: str, local_dir: str) -> str:
     os.makedirs(run_dir, exist_ok=True)
     return run_dir
 
-OmegaConf.register_new_resolver("get_local_run_dir", lambda exp_name, local_dirs: get_local_run_dir(exp_name, local_dir))
+OmegaConf.register_new_resolver("get_local_run_dir", lambda exp_name, local_dir: get_local_run_dir(exp_name, local_dir))
 logger = logging.get_logger(__name__)
 
 
