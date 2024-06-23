@@ -389,6 +389,7 @@ def main(config: DictConfig):
             torch_xla.device(),
             # Shard the input's batch dimension along the `fsdp` axis, no sharding along other dimensions
             input_sharding=xs.ShardingSpec(mesh, ('fsdp', None)))
+        train_device_loader = iter(train_device_loader)
     else:
         pass
 
