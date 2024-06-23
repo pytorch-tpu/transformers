@@ -288,6 +288,8 @@ def main(config: DictConfig):
     model_torch_dtype = getattr(torch, config.model.torch_dtype)
     if config.model.config_path:
         model_config = AutoConfig.from_pretrained(config.model.config_path)
+        model_config.static = True
+        model_config.flash_attention = True
         model = AutoModelForCausalLM.from_config(model_config)
         model = model.to(model_torch_dtype)
     else:
