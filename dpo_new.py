@@ -287,7 +287,8 @@ def main(config: DictConfig):
 
     model_torch_dtype = getattr(torch, config.model.torch_dtype)
     if config.model.config_path:
-        model = AutoConfig.from_pretrained(config.model.config_path)
+        model_config = AutoConfig.from_pretrained(config.model.config_path)
+        model = AutoModelForCausalLM.from_config(model_config)
         model = model.to(model_torch_dtype)
     else:
         model = AutoModelForCausalLM.from_pretrained(
@@ -299,7 +300,7 @@ def main(config: DictConfig):
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: min(1.0, (step + 1) / (config.warmup_steps + 1)))
 
     if config.model.config_path:
-        ref_model = AutoConfig.from_pretrained(config.model.config_path)
+        ref_model = AutoModelForCausalLM.from_config(model_config)
         ref_model = ref_model.to(model_torch_dtype)
     else:
         ref_model = AutoModelForCausalLM.from_pretrained(
