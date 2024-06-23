@@ -4,7 +4,6 @@ import transformers
 import os
 import hydra
 from omegaconf import OmegaConf, DictConfig
-import trainers
 import wandb
 import json
 from typing import Optional, Set
