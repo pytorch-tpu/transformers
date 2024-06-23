@@ -45,24 +45,23 @@ from datetime import datetime
 import os
 import getpass
 
-def get_local_dir(prefixes_to_resolve: List[str]) -> str:
+def get_local_dir(prefix: str) -> str:
     """Return the path to the cache directory for this user."""
-    for prefix in prefixes_to_resolve:
-        if os.path.exists(prefix):
-            return f"{prefix}/{getpass.getuser()}"
+    if os.path.exists(prefix):
+        return f"{prefix}/{getpass.getuser()}"
     os.makedirs(prefix)
     return f"{prefix}/{getpass.getuser()}"
     
 
-def get_local_run_dir(exp_name: str, local_dirs: List[str]) -> str:
+def get_local_run_dir(exp_name: str, local_dir: str) -> str:
     """Create a local directory to store outputs for this run, and return its path."""
     now = datetime.now()
     timestamp = now.strftime("%Y-%m-%d_%H-%M-%S_%f")
-    run_dir = f"{get_local_dir(local_dirs)}/{exp_name}_{timestamp}"
+    run_dir = f"{get_local_dir(local_dir)}/{exp_name}_{timestamp}"
     os.makedirs(run_dir, exist_ok=True)
     return run_dir
 
-OmegaConf.register_new_resolver("get_local_run_dir", lambda exp_name, local_dirs: get_local_run_dir(exp_name, local_dirs))
+OmegaConf.register_new_resolver("get_local_run_dir", lambda exp_name, local_dirs: get_local_run_dir(exp_name, local_dir))
 logger = logging.get_logger(__name__)
 
 
@@ -292,7 +291,7 @@ def main(config: DictConfig):
         model = model.to(model_torch_dtype)
     else:
         model = AutoModelForCausalLM.from_pretrained(
-            config.model.name_or_path, cache_dir=config.cache_local_dirs, low_cpu_mem_usage=True, torch_dtype=model_torch_dtype)
+            config.model.name_or_path, cache_dir=config.cache_local_dir, low_cpu_mem_usage=True, torch_dtype=model_torch_dtype)
     
     model = prepare_model(model, config)
     gc.collect()
@@ -304,7 +303,7 @@ def main(config: DictConfig):
         ref_model = ref_model.to(model_torch_dtype)
     else:
         ref_model = AutoModelForCausalLM.from_pretrained(
-            config.model.name_or_path, cache_dir=config.cache_local_dirs, low_cpu_mem_usage=True, torch_dtype=model_torch_dtype)
+            config.model.name_or_path, cache_dir=config.cache_local_dir, low_cpu_mem_usage=True, torch_dtype=model_torch_dtype)
     ref_model.eval()
 
     ref_model = prepare_model(ref_model, config)
