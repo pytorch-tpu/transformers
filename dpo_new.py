@@ -169,7 +169,7 @@ def concatenated_forward(
 
         We do this to avoid doing two forward passes, because it's faster for FSDP.
         """
-        len_chosen = concatenated_batch["concatenated_input_ids"].shape(0) // 2
+        len_chosen = concatenated_batch["concatenated_input_ids"].shape[0] // 2
         all_logits = model(
             concatenated_batch["concatenated_input_ids"],
             attention_mask=concatenated_batch["concatenated_attention_mask"],
