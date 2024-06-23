@@ -321,7 +321,7 @@ def prepare_model(model, config):
 
 def clip_gradient(model, config):
     """Clip the gradient norm of the parameters of an FSDP policy, gathering the gradients across all GPUs."""
-    return torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm).item()
+    return torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
 
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
