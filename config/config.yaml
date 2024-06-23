@@ -36,6 +36,7 @@ label_pad_token_id: -100
 datasets:
 - hh
 
+beta: 0.1
 # wandb configuration
 wandb:
   enabled: true

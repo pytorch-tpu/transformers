@@ -15,6 +15,7 @@ import torch_xla.runtime as xr
 import torch_xla.utils.utils as xu
 
 import numpy as np
+import torch.nn.functional as F
 
 import torch_xla
 
@@ -52,6 +53,60 @@ def get_local_dir(prefix: str) -> str:
     os.makedirs(prefix)
     return f"{prefix}/{getpass.getuser()}"
     
+def dpo_loss(
+        policy_chosen_logps: torch.FloatTensor,
+        policy_rejected_logps: torch.FloatTensor,
+        reference_chosen_logps: torch.FloatTensor,
+        reference_rejected_logps: torch.FloatTensor,
+        beta: float = 0.1,
+        label_smoothing: float = 0.0,
+        loss_type: str = "sigmoid",
+    ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+        """Compute the DPO loss for a batch of policy and reference model log probabilities.
+
+        Args:
+            policy_chosen_logps: Log probabilities of the policy model for the chosen responses. Shape: (batch_size,)
+            policy_rejected_logps: Log probabilities of the policy model for the rejected responses. Shape: (batch_size,)
+            reference_chosen_logps: Log probabilities of the reference model for the chosen responses. Shape: (batch_size,)
+            reference_rejected_logps: Log probabilities of the reference model for the rejected responses. Shape: (batch_size,)
+
+        Returns:
+            A tuple of three tensors: (losses, chosen_rewards, rejected_rewards).
+            The losses tensor contains the DPO loss for each example in the batch.
+            The chosen_rewards and rejected_rewards tensors contain the rewards for the chosen and rejected responses, respectively.
+        """
+        pi_logratios = policy_chosen_logps - policy_rejected_logps
+        ref_logratios = reference_chosen_logps - reference_rejected_logps
+
+        logits = pi_logratios - ref_logratios
+
+        # The beta is a temperature parameter for the DPO loss, typically something in the range of 0.1 to 0.5.
+        # We ignore the reference model as beta -> 0. The label_smoothing parameter encodes our uncertainty about the labels and
+        # calculates a conservative DPO loss.
+        if loss_type == "sigmoid":
+            losses = (
+                -F.logsigmoid(beta * logits) * (1 - label_smoothing)
+                - F.logsigmoid(-beta * logits) * label_smoothing
+            )
+        elif loss_type == "ipo":
+            # eqn (17) of the paper where beta is the regularization parameter for the IPO loss, denoted by tau in the paper.
+            losses = (logits - 1 / (2 * beta)) ** 2
+
+        chosen_rewards = (
+            beta
+            * (
+                policy_chosen_logps - reference_chosen_logps
+            ).detach()
+        )
+        rejected_rewards = (
+            beta
+            * (
+                policy_rejected_logps
+                - reference_rejected_logps
+            ).detach()
+        )
+
+        return losses, chosen_rewards, rejected_rewards
 
 def get_local_run_dir(exp_name: str, local_dir: str) -> str:
     """Create a local directory to store outputs for this run, and return its path."""
@@ -124,7 +179,6 @@ def concatenated_forward(
         all_logps, size_completion = get_batch_logps(
             all_logits,
             concatenated_batch["concatenated_labels"],
-            # average_log_prob=self.loss_type == "ipo",
             label_pad_token_id=label_pad_token_id,
         )
 
@@ -155,6 +209,8 @@ def get_batch_loss_metrics(
         ref_model,
         batch: Dict[str, Union[List, torch.LongTensor]],
         train_eval: Literal["train", "eval"] = "train",
+        label_pad_token_id: int = -100,
+        beta: float = 0.1
     ):
         """Compute the DPO loss and other metrics for the given batch of inputs for train or test."""
         metrics = {}
@@ -165,7 +221,7 @@ def get_batch_loss_metrics(
             policy_chosen_logits,
             policy_rejected_logits,
             policy_chosen_logps_avg,
-        ) = concatenated_forward(model, batch)
+        ) = concatenated_forward(model, batch, label_pad_token_id)
 
         with torch.no_grad():
             (
@@ -174,12 +230,13 @@ def get_batch_loss_metrics(
                 _,
                 _,
                 _,
-            ) = concatenated_forward(ref_model, batch)
+            ) = concatenated_forward(ref_model, batch, label_pad_token_id)
         losses, chosen_rewards, rejected_rewards = dpo_loss(
             policy_chosen_logps,
             policy_rejected_logps,
             reference_chosen_logps,
             reference_rejected_logps,
+            beta,
         )
         reward_accuracies = (chosen_rewards > rejected_rewards).float()
 
@@ -322,7 +379,7 @@ def main(config: DictConfig):
             "concatenated_attention_mask": torch.ones(global_batch_size * 2, config.max_seq_len, dtype=torch.int64),
         }
         data["concatenated_labels"] = data["concatenated_input_ids"]
-        data["concatenated_labels"][:, :config.max_seq_len // 2] = config.data.label_pad_token_id
+        data["concatenated_labels"][:, :config.max_seq_len // 2] = config.label_pad_token_id
         train_loader = xu.SampleGenerator(
             data = data,
             sample_count=100,
@@ -340,7 +397,7 @@ def main(config: DictConfig):
     tracker = xm.RateTracker()
     for step in np.arange(start_step, config.max_steps):
         batch = next(train_device_loader)
-        loss, metrics = get_batch_loss_metrics(model, ref_model, batch, "train")
+        loss, metrics = get_batch_loss_metrics(model, ref_model, batch, "train", beta=config.beta)
         tracker.add(global_batch_size)
 
         loss.backward()
