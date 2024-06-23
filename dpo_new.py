@@ -77,7 +77,7 @@ def sequence_mask(lengths, maxlen=None, dtype=torch.bool):
     return mask
 
 def report_metrics(step, loss, tracker, metrics):
-    print(f'{step=}, {loss=}, {tracker.rate()=}, {metrics=}')
+    logger.info(f'{step=}, {loss=}, {tracker.rate()=}, {metrics=}')
 
 def get_batch_logps(
         logits: torch.FloatTensor,
@@ -273,8 +273,8 @@ def clip_gradient(model, config):
 def main(config: DictConfig):
     OmegaConf.resolve(config)
 
-    logging.info("\n\n************** Experiment configuration ***********")
-    print(OmegaConf.to_yaml(config))
+    logger.info("\n\n************** Experiment configuration ***********")
+    logger.info(OmegaConf.to_yaml(config))
 
     config_path = os.path.join(config.local_run_dir, 'config.yaml')
     with open(config_path, 'w') as f:
