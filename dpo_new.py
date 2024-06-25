@@ -45,6 +45,8 @@ import torch
 from datetime import datetime
 import os
 import getpass
+from datasets import load_dataset
+from transformers import set_seed
 
 def get_local_dir(prefix: str) -> str:
     """Return the path to the cache directory for this user."""
@@ -327,6 +329,7 @@ def clip_gradient(model, config):
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def main(config: DictConfig):
     OmegaConf.resolve(config)
+    set_seed(config.seed)
 
     logger.info("\n\n************** Experiment configuration ***********")
     logger.info(OmegaConf.to_yaml(config))
@@ -369,6 +372,10 @@ def main(config: DictConfig):
     gc.collect()
 
     tokenizer = AutoTokenizer.from_pretrained(config.model.name_or_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    if tokenizer.chat_template is None:
+        tokenizer.chat_template = "{% for message in messages %}{{message['role'] + ': ' + message['content'] + '\n\n'}}{% endfor %}{{ eos_token }}"
 
     global_batch_size = config.per_device_train_batch_size * num_devices
     # 'chosen_input_ids', 'chosen_attention_mask', 'rejected_input_ids', 'rejected_attention_mask', 'chosen_labels', 'rejected_labels'
@@ -390,7 +397,22 @@ def main(config: DictConfig):
             input_sharding=xs.ShardingSpec(mesh, ('fsdp', None)))
         train_device_loader = iter(train_device_loader)
     else:
-        pass
+        ds = load_dataset(config.datasets)
+        for key in ds:
+            ds[key] = ds[key].select(range(50))
+
+        def process(row):
+            row["chosen"] = tokenizer.apply_chat_template(row["chosen"], tokenize=False)
+            row["rejected"] = tokenizer.apply_chat_template(row["rejected"], tokenize=False)
+            return row
+
+        ds = ds.map(
+            process,
+            num_proc=1,
+            load_from_cache_file=False,
+        )
+
+
 
     
     start_step = 0

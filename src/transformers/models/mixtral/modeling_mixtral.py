@@ -864,6 +864,9 @@ class MixtralSparseMoeBlock(nn.Module):
             hidden_states *= torch.empty_like(hidden_states).uniform_(1.0 - self.jitter_noise, 1.0 + self.jitter_noise)
         hidden_states = hidden_states.view(-1, hidden_dim)
         # router_logits: (batch * sequence_length, n_experts)
+        import torch_xla.distributed.spmd as xs
+        # Sharding propagation fails without explicit annotation
+        xs.mark_sharding(hidden_states, xs.get_global_mesh(), (('fsdp', 'seq'), None))
         router_logits = self.gate(hidden_states)
 
         routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
