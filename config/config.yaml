@@ -34,7 +34,7 @@ label_pad_token_id: -100
 
 # which dataset(s) to train on; can pass a list like datasets=[hh,shp]
 datasets:
-- trl-internal-testing/hh-rlhf-helpful-base-trl-style
+- hh
 
 beta: 0.1
 # wandb configuration
