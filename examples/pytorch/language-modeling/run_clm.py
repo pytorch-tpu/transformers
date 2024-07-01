@@ -34,6 +34,7 @@ import datasets
 import evaluate
 import torch
 from datasets import load_dataset
+import torch_xla.core.xla_model as xm
 
 import transformers
 from transformers import (
@@ -469,7 +470,9 @@ def main():
             low_cpu_mem_usage=model_args.low_cpu_mem_usage,
         )
     else:
-        model = AutoModelForCausalLM.from_config(config, trust_remote_code=model_args.trust_remote_code)
+        with torch.device("meta"):
+            model = AutoModelForCausalLM.from_config(config).to_empty(device=xm.xla_device())
+        model.apply(model._init_weights)
         # Set the model dtype since we can no longer rely on USE_XLA_BF16.
         if model_args.torch_dtype is not None:
             model = model.to(getattr(torch, model_args.torch_dtype))
