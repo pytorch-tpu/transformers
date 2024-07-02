@@ -502,7 +502,7 @@ def main():
         )
 
     import torch_xla.core.xla_model as xm
-    import torch_xla.experimental.xla_sharding as xs
+    import torch_xla.distributed.spmd as xs
 
     # Ensure only one sharding scheme is provided
     assert not model_args.spmd_fsdp_sharding or model_args.spmd_2d_sharding == 0, \
