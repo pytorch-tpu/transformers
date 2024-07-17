@@ -51,7 +51,7 @@ from ...utils import (
 from .configuration_llama import LlamaConfig
 
 import torch_xla.debug.profiler as xp
-import torch_xla.experimental.xla_sharding as xs
+import torch_xla.distributed.spmd as xs
 import torch_xla
 
 if is_flash_attn_2_available():
