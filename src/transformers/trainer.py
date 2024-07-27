@@ -1786,7 +1786,7 @@ class Trainer:
 
     def _xla_sharded_dataloader(self, dataloader):
         if is_torch_xla_available():
-            import torch_xla.experimental.xla_sharding as xs
+            import torch_xla.distributed.spmd as xs
             import torch_xla.distributed.parallel_loader as pl
             sharding_spec = xs.ShardingSpec(self.args.spmd_mesh, (('dcn', 'data'), None))
             # TODO(jonbolin): Once integrated with Accelerate, we can use the Accelerate-prepared
