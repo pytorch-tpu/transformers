@@ -54,6 +54,9 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 
+import torch_xla
+import torch_xla.distributed.spmd as xs
+import torch_xla.runtime as xr
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.40.0.dev0")
@@ -161,6 +164,14 @@ class ModelArguments:
         metadata={
             "help": (
                 "Enable PyTorch/XLA Pallas Flash Attention"
+            )
+        },
+    )
+    spmd_2d_sharding: int = field(
+        default=0,
+        metadata={
+            "help": (
+                "Will apply XLA SPMD to 2D sharding, i.e., weights + activations, and spmd_2d_sharding specifies the model dimension"
             )
         },
     )
@@ -606,6 +617,54 @@ def main():
             labels = labels[:, 1:].reshape(-1)
             preds = preds[:, :-1].reshape(-1)
             return metric.compute(predictions=preds, references=labels)
+
+    # Apply 2D sharding
+    if model_args.spmd_2d_sharding > 0:
+        num_devices = xr.global_runtime_device_count()
+        tensor_axis = model_args.spmd_2d_sharding
+        fsdp_axis = num_devices // tensor_axis
+        mesh_shape = (fsdp_axis, tensor_axis)
+        spmd_mesh = xs.Mesh(range(num_devices), mesh_shape, ('fsdp', 'tensor'))
+        xs.set_global_mesh(spmd_mesh)
+
+        model.to("xla")
+        for name, param in model.named_parameters():
+            print('> [2D] Sharding tensor', name, param.shape)
+
+            # Here we intentionally skip layernorm and moe.gate weights given they are small.
+            if 'embed_tokens' in name:
+                xs.mark_sharding(param, spmd_mesh, ('fsdp', 'tensor'))  # needed to have activations fully sharded.
+            elif 'q_proj' in name or 'k_proj' in name or 'v_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('tensor', 'fsdp'))
+            elif 'o_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('fsdp', 'tensor'))
+            elif 'w1' in name or 'w3' in name:
+                if model_args.gmm:  # It doesn't use nn.Linear and no t.
+                    xs.mark_sharding(param, spmd_mesh, (None, 'fsdp', 'tensor'))
+                else:
+                    xs.mark_sharding(param, spmd_mesh, ('tensor', 'fsdp'))
+            elif 'w2' in name:
+                if model_args.gmm:  # It doesn't use nn.Linear and no t.
+                    xs.mark_sharding(param, spmd_mesh, (None, 'tensor', 'fsdp'))
+                else:
+                    xs.mark_sharding(param, spmd_mesh, ('fsdp', 'tensor'))
+            elif 'lm_head' in name:
+                xs.mark_sharding(param, spmd_mesh, (('tensor', 'fsdp'), None))  # keep this fsdp.
+
+            print(f'{name} {torch_xla._XLAC._get_xla_sharding_spec(param)}')
+
+        for i, block in enumerate(model.model.layers):
+            xs.apply_backward_optimization_barrier(model.model.layers[i])
+
+        print("Applying gradient checkpointing")
+        if model.config.use_cache:
+            logger.warning_once(
+                "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
+            )
+            model.config.use_cache = False
+        from torch_xla.distributed.fsdp import checkpoint_module
+        for i, block in enumerate(model.model.layers):
+            model.model.layers[i] = checkpoint_module(block)
 
     # Initialize our Trainer
     trainer = Trainer(

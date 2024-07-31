@@ -371,6 +371,7 @@ class LlamaAttention(nn.Module):
         key_states = repeat_kv(key_states, self.num_key_value_groups)
         value_states = repeat_kv(value_states, self.num_key_value_groups)
 
+        # Non FA path doesn't deal with 2D sharding.
         if not self.config.flash_attention:
             attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
 
@@ -385,8 +386,8 @@ class LlamaAttention(nn.Module):
         else:
             # Integrated with PyTorch/XLA Pallas Flash Attention:
             from torch_xla.experimental.custom_kernel import flash_attention
-            query_states = query_states / math.sqrt(self.head_dim)
-            attn_output = flash_attention(query_states, key_states, value_states, causal=True, partition_spec=('fsdp', None, None, None))
+            query_states /= math.sqrt(self.head_dim)
+            attn_output = flash_attention(query_states, key_states, value_states, causal=True, partition_spec=('fsdp', 'tensor', None, None))
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
             raise ValueError(
