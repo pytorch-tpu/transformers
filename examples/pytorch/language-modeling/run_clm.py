@@ -638,16 +638,10 @@ def main():
                 xs.mark_sharding(param, spmd_mesh, ('tensor', 'fsdp'))
             elif 'o_proj' in name:
                 xs.mark_sharding(param, spmd_mesh, ('fsdp', 'tensor'))
-            elif 'w1' in name or 'w3' in name:
-                if model_args.gmm:  # It doesn't use nn.Linear and no t.
-                    xs.mark_sharding(param, spmd_mesh, (None, 'fsdp', 'tensor'))
-                else:
-                    xs.mark_sharding(param, spmd_mesh, ('tensor', 'fsdp'))
-            elif 'w2' in name:
-                if model_args.gmm:  # It doesn't use nn.Linear and no t.
-                    xs.mark_sharding(param, spmd_mesh, (None, 'tensor', 'fsdp'))
-                else:
-                    xs.mark_sharding(param, spmd_mesh, ('fsdp', 'tensor'))
+            elif 'gate_proj' in name or 'up_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('tensor', 'fsdp'))
+            elif 'down_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('fsdp', 'tensor'))
             elif 'lm_head' in name:
                 xs.mark_sharding(param, spmd_mesh, (('tensor', 'fsdp'), None))  # keep this fsdp.
 
