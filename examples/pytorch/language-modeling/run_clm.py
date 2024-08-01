@@ -222,6 +222,14 @@ class ModelArguments:
             )
         },
     )
+    flash_attention: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Enable PyTorch/XLA Pallas Flash Attention"
+            )
+        },
+    )
 
     def __post_init__(self):
         if self.config_overrides is not None and (self.config_name is not None or self.model_name_or_path is not None):
@@ -511,6 +519,7 @@ def main():
     # Pass the sharding parameters to the model config
     config.spmd_debug = model_args.spmd_debug
     config.spmd_fsdp_sharding = model_args.spmd_fsdp_sharding
+    config.flash_attention = model_args.flash_attention
 
     # Place DCN on an independent axis in the mesh. Model parameters should be
     # replicated along the DCN axis, and inputs and activations should have
@@ -526,6 +535,7 @@ def main():
         spmd_mesh = xs.HybridMesh(ici_mesh_shape=ici_mesh_shape,
                                 dcn_mesh_shape=dcn_mesh_shape,
                                 axis_names=('dcn', 'data', 'model'))
+        xs.set_global_mesh(spmd_mesh)
     elif xr.device_type() == 'CUDA':
         data_axis = num_devices // model_axis
         mesh_shape = (1, data_axis, model_axis)
