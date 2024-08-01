@@ -517,7 +517,7 @@ def main():
     # the batch dimension sharded along the combined DCN and data axes.
     num_devices = xr.global_runtime_device_count()
     model_axis = max(model_args.spmd_2d_sharding, 1)
-    assert xr.device_type() == 'TPU' or xr.device_type() == 'CUDA', f"Supported hardware are TPU and CUDA. Detected hardware: {xr.device_type()}" 
+    assert xr.device_type() == 'TPU' or xr.device_type() == 'CUDA', f"Supported hardware are TPU and CUDA. Detected hardware: {xr.device_type()}"
     if xr.device_type() == 'TPU':
         dcn_axis = model_args.spmd_dcn_parallelism
         data_axis = num_devices // model_axis // dcn_axis
@@ -562,11 +562,15 @@ def main():
             )
         else:
             model = AutoModelForCausalLM.from_config(config, trust_remote_code=model_args.trust_remote_code)
+            # Set the model dtype since we can no longer rely on USE_XLA_BF16.
+            if model_args.torch_dtype is not None:
+                model = model.to(getattr(torch, model_args.torch_dtype))
             n_params = sum({p.data_ptr(): p.numel() for p in model.parameters()}.values())
             logger.info(f"Training new model from scratch - Total size={n_params/2**20:.2f}M params")
 
     # TODO(jonbolin): Removing the SPMD mesh from the config since it is not serializable.
     del config.spmd_mesh
+    del model.config.spmd_mesh
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -623,7 +627,7 @@ def main():
             # LLaMA doesn't use biases.
             if len(param.shape) == 1:
                 continue
-            
+
             if 'embed_tokens' in name:
                 xs.mark_sharding(param, spmd_mesh, ('model', 'data'))
             elif 'q_proj' in name or 'k_proj' in name or 'v_proj' in name:
@@ -644,6 +648,12 @@ def main():
         xs.apply_backward_optimization_barrier(model.model.layers[i])
 
     if model_args.spmd_grad_chkpt:
+        if model.config.use_cache:
+            logger.warning_once(
+                "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
+            )
+            model.config.use_cache = False
+
         print("Applying gradient checkpointing")
         from torch_xla.distributed.fsdp import checkpoint_module
         for i, block in enumerate(model.model.layers):
