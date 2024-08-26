@@ -16,7 +16,7 @@ export ZONE=your-tpu-zone
 export PROJECT=your-tpu-project
 ```
 
-### HF Mixtral 7 x 8B Environment Setup
+### HF Llama Environment Setup
 
 Here both PyTorch and PyTorch/XLA nightly are used with our fork of HuggingFace.
 ```
@@ -60,7 +60,7 @@ The last step for HF setup is to copy your fsdp_config.json into the TPU VM.
 ```
 {
     "fsdp_transformer_layer_cls_to_wrap": [
-        "MixtralDecoderLayer"
+        "LlamaDecoderLayer"
     ],
     "xla": true,
     "xla_fsdp_v2": true,
