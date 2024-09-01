@@ -229,8 +229,8 @@ class MixtralRotaryEmbedding(nn.Module):
 # Copied from transformers.models.llama.modeling_llama.rotate_half
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
+    # use torch.chunk to avoid copy, each chunk is a view of input tensor
+    x1, x2 = x.chunk(2, dim=-1)
     return torch.cat((-x2, x1), dim=-1)
 
 
