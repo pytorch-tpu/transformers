@@ -2252,8 +2252,9 @@ class Trainer:
                     ):
                         # the `or` condition of `is_last_step_and_steps_less_than_grad_acc` is not covered
                         # in accelerate. So, explicitly enable sync gradients to True in that case.
-                        if is_last_step_and_steps_less_than_grad_acc:
-                            self.accelerator.gradient_state._set_sync_gradients(True)
+                        # if is_last_step_and_steps_less_than_grad_acc:
+                        #    self.accelerator.gradient_state._set_sync_gradients(True)
+                        self.accelerator.gradient_state._set_sync_gradients(True)
 
                         # Gradient clipping
                         if args.max_grad_norm is not None and args.max_grad_norm > 0:
