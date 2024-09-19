@@ -2289,7 +2289,6 @@ class Trainer:
                         # Optimizer step
                         with xp.Trace("TrainerOptimizerStep"):
                             self.optimizer.step()
-                        opt_step()
                         optimizer_was_run = not self.accelerator.optimizer_step_was_skipped
                         if optimizer_was_run:
                             # Delay optimizer scheduling until metrics are generated
