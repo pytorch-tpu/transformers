@@ -851,6 +851,7 @@ class MixtralSparseMoeBlock(nn.Module):
         self.num_experts = config.num_local_experts
         self.top_k = config.num_experts_per_tok
         self.static = config.static
+        self.capacity_factor = config.capacity_factor
 
         # gating
         self.gate = nn.Linear(self.hidden_dim, self.num_experts, bias=False)
@@ -860,6 +861,68 @@ class MixtralSparseMoeBlock(nn.Module):
         # Jitter parameters
         self.jitter_noise = config.router_jitter_noise
 
+    def generate_masks(self, top_k_indices):
+        """
+        Apply the drop implementation by masking out tokens that exceed the expert_capacity
+        reference to https://github.com/google/maxtext/blob/main/MaxText/layers/linears.py#L433
+
+        input:
+            top_k_indices shape: (batch, sequence_length, top_k) int, with value as the assigned expert index of the token
+
+        return:
+            dispatch_mask: (batch, sequence_length, num_experts, top_k) bool, representing the token-to-expert assignments.
+                A value of True indicates that the token is assigned to the corresponding expert slot.
+            token_mask: (batch, sequence_length), bool, whether a token has been assigned to any expert (False means the token is unassigned).
+            top_k_weight_mask: (batch, sequence_length, top_k) bool, whether the prob is valid after applying dropping within expert_capacity
+        """
+        batch_size, sequence_length, _ = top_k_indices.shape
+        expert_capacity = int((sequence_length * self.top_k / self.num_experts) * self.capacity_factor)
+
+        # (batch, sequence_length, top_k, num_experts)
+        top_k_indices_one_hot = F.one_hot(top_k_indices, num_classes=self.num_experts)
+
+        # (batch, sequence_length * top_k, num_experts)
+        top_k_indices_one_hot = top_k_indices_one_hot.reshape(batch_size, sequence_length * self.top_k, self.num_experts)
+
+        # batch_size, sequence_length * top_k, num_experts
+        # torch.cumsum won't work with int64
+        token_priority = torch.cumsum(top_k_indices_one_hot.int(), dim=-2)
+
+        # batch_size, sequence_length * top_k, num_experts
+        expert_capacity_mask = token_priority <= expert_capacity
+
+        # batch_size, sequence_length, top_k, num_experts
+        top_k_indices_one_hot *= expert_capacity_mask
+
+        # batch_size, sequence_length * top_k, num_experts
+        expert_capacity_mask = expert_capacity_mask.reshape(batch_size, sequence_length, self.top_k, self.num_experts)
+
+        # batch_size, sequence_length * top_k, num_experts
+        top_k_indices_one_hot = top_k_indices_one_hot.reshape(batch_size, sequence_length, self.top_k, self.num_experts)
+
+        # some token prob would be dropped exceeding capacity
+
+        # batch_size, sequence_length, top_k
+        top_k_weight_mask = top_k_indices_one_hot.sum(-1).bool()
+
+        # batch_size, sequence_length, num_experts
+        softmax_probs_mask = top_k_indices_one_hot.sum(2)
+
+        # torch.cumsum won't work with int64
+        combined_expert_token_position = torch.cumsum(softmax_probs_mask.int(), axis=1) * softmax_probs_mask
+        expert_token_position_in_capacity = F.one_hot(
+            combined_expert_token_position, num_classes=expert_capacity + 1
+        )
+
+        # shape of combine_mask is (batch_size, sequence_length, num_experts, expert_capacity + 1),
+        # and cut 0-dimension which is always 0
+        combine_mask = softmax_probs_mask.unsqueeze(-1) * expert_token_position_in_capacity
+        combine_mask = combine_mask[..., 1:]
+        dispatch_mask = combine_mask.bool()
+        token_mask = dispatch_mask.sum((-1, -2)).bool()
+        return dispatch_mask, token_mask, top_k_weight_mask
+
+
     @xp.trace_me("MixtralSparseMoeBlock")
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """ """
@@ -867,18 +930,42 @@ class MixtralSparseMoeBlock(nn.Module):
         if self.training and self.jitter_noise > 0:
             hidden_states *= torch.empty_like(hidden_states).uniform_(1.0 - self.jitter_noise, 1.0 + self.jitter_noise)
         hidden_states = hidden_states.view(-1, hidden_dim)
-        # router_logits: (batch * sequence_length, n_experts)
+        # router_logits: (batch * sequence_length, num_experts)
         router_logits = self.gate(hidden_states)
 
         routing_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
         routing_weights, selected_experts = torch.topk(routing_weights, self.top_k, dim=-1)
+
+        # router_weights: (batch * sequence_length, top_k)
         routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
         # we cast back to the input dtype
         routing_weights = routing_weights.to(hidden_states.dtype)
 
-        final_hidden_states = torch.zeros(
-            (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
-        )
+
+        if self.capacity_factor > 0:
+            logger.info(
+                f"apply dropped implementation with capacity_factor={self.capacity_factor}"
+            )
+            top_k_indices = selected_experts.reshape(batch_size, sequence_length, self.top_k)
+            _, token_mask, top_k_weight_mask = self.generate_masks(top_k_indices)
+            routing_weights *= top_k_weight_mask.reshape((batch_size * sequence_length), self.top_k)
+
+            # https://github.com/huggingface/transformers/blob/v4.44.2/src/transformers/models/switch_transformers/modeling_switch_transformers.py#L296
+            # The routers introduced might not always map all the tokens, to a router, which means that some hidden states
+            # can be unchanged from one layer to another. That is why the hidden states are cloned before updating only the seleced ones.
+            final_hidden_states = hidden_states.view(batch_size, sequence_length, hidden_dim).clone()
+
+            # mask as 0 if the selected token would be assigned to at least one expert
+            # reuse previous hidden states otherwise
+            # token_mask: (batch_size, sequence_length)
+            token_mask = token_mask.unsqueeze(-1)
+            final_hidden_states = final_hidden_states.masked_fill(token_mask, 0.0)
+
+            final_hidden_states = final_hidden_states.reshape(batch_size * sequence_length, hidden_dim)
+        else:
+            final_hidden_states = torch.zeros(
+                (batch_size * sequence_length, hidden_dim), dtype=hidden_states.dtype, device=hidden_states.device
+            )
 
         # One hot encode the selected experts to create an expert mask
         # this will be used to easily index which expert is going to be sollicitated
