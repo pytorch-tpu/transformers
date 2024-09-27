@@ -1507,7 +1507,7 @@ class MixtralModel(MixtralPreTrainedModel):
             assert self.attention_dropout == 0, \
                 "Dropout is only supported when decoder layers are unrolled"
 
-        if not self.unroll_decoders and not use_cache and \
+        if not self.unroll_decoders and self.training and not use_cache and \
             not output_attentions and not output_hidden_states and not output_router_logits:
             self.log_once("NOTE: Using apply_layers to speed up compilation")
 
@@ -1519,7 +1519,7 @@ class MixtralModel(MixtralPreTrainedModel):
                     self.decoder_layer = decoder_layer
 
                 def forward(self, hidden_states):
-                    layer_outputs = decoder_layer(
+                    layer_outputs = self.decoder_layer(
                         hidden_states,
                         attention_mask=attention_mask,
                         position_ids=position_ids,
