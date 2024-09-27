@@ -987,6 +987,10 @@ class Gmm(torch.autograd.Function):
             silu = xs.enable_manual_sharding(silu, ('fsdp', 'tensor')).global_tensor
             sgmm = xs.enable_manual_sharding(sgmm, ('fsdp', 'tensor')).global_tensor
             grad_output = xs.enable_manual_sharding(grad_output, ('fsdp', None, None)).global_tensor
+        else:
+            w1 = full_w1
+            w2 = full_w2
+            w3 = full_w3
 
         grad_output_sorted = grad_output.reshape(-1, n)[hidden_states_order]
         grad_output, grad_w2 = gmm_backward(grad_output_sorted, sgmm, w2, group_sizes)
