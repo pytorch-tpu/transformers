@@ -1375,6 +1375,9 @@ class MixtralModel(MixtralPreTrainedModel):
         self.norm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
         self.gradient_checkpointing = False
+        self.unroll_decoders = config.unroll_decoders
+        self.attention_dropout = config.attention_dropout
+
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -1383,6 +1386,13 @@ class MixtralModel(MixtralPreTrainedModel):
 
     def set_input_embeddings(self, value):
         self.embed_tokens = value
+
+    def log_once(self, message):
+        if not hasattr(self, "logged_messages"):
+            self.logged_messages = set()
+        if message not in self.logged_messages:
+            print(message)
+            self.logged_messages.add(message)
 
     # Ignore copy
     @add_start_docstrings_to_model_forward(MIXTRAL_INPUTS_DOCSTRING)
@@ -1488,42 +1498,77 @@ class MixtralModel(MixtralPreTrainedModel):
         all_router_logits = () if output_router_logits else None
         next_decoder_cache = None
 
-        for decoder_layer in self.layers:
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
+        # Condition for `apply_layers`
+        if not self.unroll_decoders:
+            assert self.attention_dropout == 0, \
+                "Dropout is only supported when decoder layers are unrolled"
 
-            if self.gradient_checkpointing and self.training:
-                layer_outputs = self._gradient_checkpointing_func(
-                    decoder_layer.__call__,
-                    hidden_states,
-                    attention_mask,
-                    position_ids,
-                    past_key_values,
-                    output_attentions,
-                    output_router_logits,
-                    use_cache,
-                )
-            else:
-                layer_outputs = decoder_layer(
-                    hidden_states,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_value=past_key_values,
-                    output_attentions=output_attentions,
-                    output_router_logits=output_router_logits,
-                    use_cache=use_cache,
-                )
+        if not self.unroll_decoders and not use_cache and \
+            not output_attentions and not output_hidden_states and not output_router_logits:
+            self.log_once("NOTE: Using apply_layers to speed up compilation")
 
-            hidden_states = layer_outputs[0]
+            from torch_xla.experimental.apply_layers import apply_layers
 
-            if use_cache:
-                next_decoder_cache = layer_outputs[2 if output_attentions else 1]
+            class CurriedLayer(torch.nn.Module):
+                def __init__(self, decoder_layer):
+                    super().__init__()
+                    self.decoder_layer = decoder_layer
 
-            if output_attentions:
-                all_self_attns += (layer_outputs[1],)
+                def forward(self, hidden_states):
+                    layer_outputs = decoder_layer(
+                        hidden_states,
+                        attention_mask=attention_mask,
+                        position_ids=position_ids,
+                        past_key_value=past_key_values,
+                        output_attentions=output_attentions,
+                        output_router_logits=output_router_logits,
+                        use_cache=use_cache,
+                    )
+                    hidden_states = layer_outputs[0]
+                    return hidden_states
 
-            if output_router_logits:
-                all_router_logits += (layer_outputs[-1],)
+            curried_layers = [ CurriedLayer(l) for l in self.layers ]
+            hidden_states = apply_layers(curried_layers, hidden_states)
+
+        else:
+            self.log_once("NOTE: Using for loop to run decoder layers")
+
+            for decoder_layer in self.layers:
+                if output_hidden_states:
+                    all_hidden_states += (hidden_states,)
+
+                if self.gradient_checkpointing and self.training:
+                    layer_outputs = self._gradient_checkpointing_func(
+                        decoder_layer.__call__,
+                        hidden_states,
+                        attention_mask,
+                        position_ids,
+                        past_key_values,
+                        output_attentions,
+                        output_router_logits,
+                        use_cache,
+                    )
+                else:
+                    layer_outputs = decoder_layer(
+                        hidden_states,
+                        attention_mask=attention_mask,
+                        position_ids=position_ids,
+                        past_key_value=past_key_values,
+                        output_attentions=output_attentions,
+                        output_router_logits=output_router_logits,
+                        use_cache=use_cache,
+                    )
+
+                hidden_states = layer_outputs[0]
+
+                if use_cache:
+                    next_decoder_cache = layer_outputs[2 if output_attentions else 1]
+
+                if output_attentions:
+                    all_self_attns += (layer_outputs[1],)
+
+                if output_router_logits:
+                    all_router_logits += (layer_outputs[-1],)
 
         hidden_states = self.norm(hidden_states)
 
