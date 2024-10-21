@@ -554,7 +554,8 @@ def main():
             )
         return output
 
-    with training_args.main_process_first(desc="dataset map tokenization"):
+    # with training_args.main_process_first(desc="dataset map tokenization"):
+    if True:
         if not data_args.streaming:
             tokenized_datasets = raw_datasets.map(
                 tokenize_function,
@@ -618,7 +619,8 @@ def main():
     # To speed up this part, we use multiprocessing. See the documentation of the map method for more information:
     # https://huggingface.co/docs/datasets/process#map
 
-    with training_args.main_process_first(desc="grouping texts together"):
+    # with training_args.main_process_first(desc="grouping texts together"):
+    if True:
         if not data_args.streaming:
             lm_datasets = tokenized_datasets.map(
                 group_texts,
