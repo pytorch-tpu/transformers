@@ -464,7 +464,6 @@ def main():
         with device:
             model = AutoModelForCausalLM.from_config(config, trust_remote_code=model_args.trust_remote_code)
         print('after model init RAM Used (GB):', psutil.virtual_memory()[3]/1000000000)
-        breakpoint()
         # Set the model dtype since we can no longer rely on USE_XLA_BF16.
         if model_args.torch_dtype is not None:
             model = model.to(getattr(torch, model_args.torch_dtype))
