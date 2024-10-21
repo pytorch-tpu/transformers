@@ -1959,6 +1959,9 @@ class Trainer:
                     auto_wrap_policy=auto_wrap_policy,
                     auto_wrapper_callable=auto_wrapper_callable,
                 )
+                # model init on device now fsdp sharding has complted, we want to execute the
+                # graph to init the sharded weights.
+                xm.mark_step()
             else:
                 self.model = model = FSDP(
                     model,
