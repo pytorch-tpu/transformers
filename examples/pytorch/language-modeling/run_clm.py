@@ -555,6 +555,53 @@ def main():
         result["labels"] = result["input_ids"].copy()
         return result
 
+    # Apply 2D sharding.
+    # We apply sharding annotations before running the tokenizer, since
+    # `training_args.main_process_first` may involve a `mark_step` which will materialize the
+    # model on device.
+    if model_args.spmd_2d_sharding > 0:
+        num_devices = xr.global_runtime_device_count()
+        tensor_axis = model_args.spmd_2d_sharding
+        fsdp_axis = num_devices // tensor_axis
+        mesh_shape = (fsdp_axis, tensor_axis)
+        spmd_mesh = xs.Mesh(range(num_devices), mesh_shape, ('fsdp', 'tensor'))
+        xs.set_global_mesh(spmd_mesh)
+
+        model.to("xla")
+        for name, param in model.named_parameters():
+            print('> [2D] Sharding tensor', name, param.shape)
+
+            # Here we intentionally skip layernorm and moe.gate weights given they are small.
+            if 'embed_tokens' in name:
+                xs.mark_sharding(param, spmd_mesh, ('fsdp', 'tensor'))  # needed to have activations fully sharded.
+            elif 'q_proj' in name or 'k_proj' in name or 'v_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('tensor', 'fsdp'))
+            elif 'o_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('fsdp', 'tensor'))
+            elif 'gate_proj' in name or 'up_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('tensor', 'fsdp'))
+            elif 'down_proj' in name:
+                xs.mark_sharding(param, spmd_mesh, ('fsdp', 'tensor'))
+            elif 'lm_head' in name:
+                xs.mark_sharding(param, spmd_mesh, (('tensor', 'fsdp'), None))  # keep this fsdp.
+
+            print(f'{name} {torch_xla._XLAC._get_xla_sharding_spec(param)}')
+
+        for i, block in enumerate(model.model.layers):
+            xs.apply_backward_optimization_barrier(model.model.layers[i])
+
+        print("Applying gradient checkpointing")
+        if model.config.use_cache:
+            logger.warning_once(
+                "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
+            )
+            model.config.use_cache = False
+        from torch_xla.distributed.fsdp import checkpoint_module
+        for i, block in enumerate(model.model.layers):
+            model.model.layers[i] = checkpoint_module(block)
+        # materalize all weights after 2d sharding
+        torch_xla.sync()
+
     # Note that with `batched=True`, this map processes 1,000 texts together, so group_texts throws away a remainder
     # for each of those groups of 1,000 texts. You can adjust that batch_size here but a higher value might be slower
     # to preprocess.
@@ -609,50 +656,6 @@ def main():
             labels = labels[:, 1:].reshape(-1)
             preds = preds[:, :-1].reshape(-1)
             return metric.compute(predictions=preds, references=labels)
-
-    # Apply 2D sharding
-    if model_args.spmd_2d_sharding > 0:
-        num_devices = xr.global_runtime_device_count()
-        tensor_axis = model_args.spmd_2d_sharding
-        fsdp_axis = num_devices // tensor_axis
-        mesh_shape = (fsdp_axis, tensor_axis)
-        spmd_mesh = xs.Mesh(range(num_devices), mesh_shape, ('fsdp', 'tensor'))
-        xs.set_global_mesh(spmd_mesh)
-
-        model.to("xla")
-        for name, param in model.named_parameters():
-            print('> [2D] Sharding tensor', name, param.shape)
-
-            # Here we intentionally skip layernorm and moe.gate weights given they are small.
-            if 'embed_tokens' in name:
-                xs.mark_sharding(param, spmd_mesh, ('fsdp', 'tensor'))  # needed to have activations fully sharded.
-            elif 'q_proj' in name or 'k_proj' in name or 'v_proj' in name:
-                xs.mark_sharding(param, spmd_mesh, ('tensor', 'fsdp'))
-            elif 'o_proj' in name:
-                xs.mark_sharding(param, spmd_mesh, ('fsdp', 'tensor'))
-            elif 'gate_proj' in name or 'up_proj' in name:
-                xs.mark_sharding(param, spmd_mesh, ('tensor', 'fsdp'))
-            elif 'down_proj' in name:
-                xs.mark_sharding(param, spmd_mesh, ('fsdp', 'tensor'))
-            elif 'lm_head' in name:
-                xs.mark_sharding(param, spmd_mesh, (('tensor', 'fsdp'), None))  # keep this fsdp.
-
-            print(f'{name} {torch_xla._XLAC._get_xla_sharding_spec(param)}')
-
-        for i, block in enumerate(model.model.layers):
-            xs.apply_backward_optimization_barrier(model.model.layers[i])
-
-        print("Applying gradient checkpointing")
-        if model.config.use_cache:
-            logger.warning_once(
-                "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`."
-            )
-            model.config.use_cache = False
-        from torch_xla.distributed.fsdp import checkpoint_module
-        for i, block in enumerate(model.model.layers):
-            model.model.layers[i] = checkpoint_module(block)
-        # materalize all weights after 2d sharding
-        torch_xla.sync()
 
     # Initialize our Trainer
     trainer = Trainer(
