@@ -651,6 +651,8 @@ def main():
         from torch_xla.distributed.fsdp import checkpoint_module
         for i, block in enumerate(model.model.layers):
             model.model.layers[i] = checkpoint_module(block)
+        # materalize all weights after 2d sharding
+        torch_xla.sync()
 
     # Initialize our Trainer
     trainer = Trainer(
