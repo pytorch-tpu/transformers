@@ -178,7 +178,7 @@ class MixtralRMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(hidden_size))
         self.variance_epsilon = eps
 
-    @xp.trace_me("MixtralRMSNorm")
+    # @xp.trace_me("MixtralRMSNorm")
     def forward(self, hidden_states):
         input_dtype = hidden_states.dtype
         hidden_states = hidden_states.to(torch.float32)
@@ -213,7 +213,7 @@ class MixtralRotaryEmbedding(nn.Module):
         self.register_buffer("cos_cached", emb.cos().to(dtype), persistent=False)
         self.register_buffer("sin_cached", emb.sin().to(dtype), persistent=False)
 
-    @xp.trace_me("MixtralRotaryEmbedding")
+    # @xp.trace_me("MixtralRotaryEmbedding")
     def forward(self, x, seq_len=None):
         # x: [bs, num_attention_heads, seq_len, head_size]
         if seq_len > self.max_seq_len_cached:
@@ -322,7 +322,7 @@ class MixtralAttention(nn.Module):
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
 
-    @xp.trace_me("MixtralAttention")
+    # @xp.trace_me("MixtralAttention")
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -817,7 +817,7 @@ class MixtralBlockSparseTop2MLP(nn.Module):
 
         self.act_fn = ACT2FN[config.hidden_act]
 
-    @xp.trace_me("MixtralBlockSparseTop2MLP")
+    # @xp.trace_me("MixtralBlockSparseTop2MLP")
     def forward(self, hidden_states):
         current_hidden_states = self.act_fn(self.w1(hidden_states)) * self.w3(hidden_states)
         current_hidden_states = self.w2(current_hidden_states)
@@ -864,10 +864,46 @@ class Gmm(torch.autograd.Function):
             grad_rhs.append(lhs[start:start + size, :].t() @ grad_output[start:start + size, :])
             start += size
         return torch.cat(grad_lhs), torch.stack(grad_rhs)
+    
+    @staticmethod
+    def gmm_no_jax_gate1(lhs, rhs, group_sizes, tiling=(512, 512, 512)):
+        from torch_xla.experimental.custom_kernel import _make_group_metadata
+        m, k, n = lhs.shape[0], lhs.shape[1], rhs.shape[2]
+        tm, tk, tn = min(tiling[0], m), min(tiling[1], k), min(tiling[2], n)
+        preferred_element_type = lhs.dtype
+        group_offsets, group_ids, m_tile_ids, num_tiles = _make_group_metadata(
+            group_sizes=group_sizes,
+            m=m,
+            tm=tm,
+            visit_empty_groups=False,
+        )
+        group_offset_torch = torch.tensor([0], dtype=torch.int32).to(lhs.device)
+        payload = "{\"custom_call_config\": {\"body\": \"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Zi55aWVsZAB2ZWN0b3IuYnJvYWRjYXN0AGFyaXRoLmV4dHVpAHNjZi5pZgB2ZWN0b3Iuc2hhcGVfY2FzdAB0cHUubWF0bXVsAGFyaXRoLmFkZGYAYXJpdGguYWRkaQBhcml0aC5zdWJpAGFyaXRoLm11bGkAdHB1LmlvdGEAYXJpdGguYW5kaQBhcml0aC5leHRmAGFyaXRoLnNlbGVjdABhcml0aC50cnVuY2YAL2hvbWUvYmJhaGwvbWluaWNvbmRhMy9lbnZzL3RvcmNoMzEwL2xpYi9weXRob24zLjEwL3NpdGUtcGFja2FnZXMvamF4L2V4cGVyaW1lbnRhbC9wYWxsYXMvb3BzL3RwdS9tZWdhYmxveC9nbW0ucHkAL2dldAB2YWx1ZQBfZ2V0X3N0b3JlX21hc2sAc3ltX25hbWUAa2VybmVsAF9zdG9yZV9hY2N1bQBmdW5jdGlvbl90eXBlAHByZWRpY2F0ZQAvY29udmVydF9lbGVtZW50X3R5cGUAX2FjY3VtAHRyYW5zZm9ybV9pbmRpY2VzAHdpbmRvd19ib3VuZHMAL2FkZAAvc3dhcAB0cmFuc2Zvcm1fMAB0cmFuc2Zvcm1fMQB0cmFuc2Zvcm1fMgAvZXEAL2NvbmQALQBzdGFibGVfbW9zYWljLnZlcnNpb24AZGltZW5zaW9uX3NlbWFudGljcwBpdGVyYXRpb25fYm91bmRzAHNjYWxhcl9wcmVmZXRjaABzY3JhdGNoX29wZXJhbmRzAG1haW4Ad2luZG93X3BhcmFtcwBvdXRfdHJhbnNmb3JtX2luZGljZXMAZ21tADxtb2R1bGU+AC9ob21lL2JiYWhsL3Rlc3RfZ21tLnB5AHJoc190cmFuc2Zvcm1faW5kaWNlcwBvdmVyZmxvd0ZsYWdzAC9zdWIAbGhzX3RyYW5zZm9ybV9pbmRpY2VzAC9kb3RfZ2VuZXJhbAB0cmFuc3Bvc2VfbGhzAHRyYW5zcG9zZV9yaHMAZmFzdG1hdGgAL211bABkaW1lbnNpb24AL2lvdGEAL2dlAC9sdAAvYW5kAC9zZWxlY3RfbgAvYnJvYWRjYXN0X2luX2RpbQBfemVyb19hY2MA\", \"cost_estimate\": {\"flops\": 1924145348608, \"transcendentals\": 0, \"bytes_accessed\": 8808038400}, \"serialization_format\": 1, \"needs_layout_passes\": true}, \"implicit_sharding\": {\"type\": \"MANUAL\"}}"
+        return torch_xla._XLAC._xla_tpu_custom_call([
+            num_tiles, group_offsets, group_ids, m_tile_ids, group_offset_torch, lhs, rhs], payload, [torch.Size([m, n])], [preferred_element_type])[0]
 
 
     @staticmethod
-    @xp.trace_me("gmm_forward")
+    def gmm_no_jax_gate2(lhs, rhs, group_sizes, tiling=(512, 512, 512)):
+        from torch_xla.experimental.custom_kernel import _make_group_metadata
+        m, k, n = lhs.shape[0], lhs.shape[1], rhs.shape[2]
+        tm, tk, tn = min(tiling[0], m), min(tiling[1], k), min(tiling[2], n)
+        preferred_element_type = lhs.dtype
+        group_offsets, group_ids, m_tile_ids, num_tiles = _make_group_metadata(
+            group_sizes=group_sizes,
+            m=m,
+            tm=tm,
+            visit_empty_groups=False,
+        )
+        group_offset_torch = torch.tensor([0], dtype=torch.int32).to(lhs.device)
+        payload = "{\"custom_call_config\": {\"body\": \"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Zi55aWVsZAB2ZWN0b3IuYnJvYWRjYXN0AGFyaXRoLmV4dHVpAHNjZi5pZgB2ZWN0b3Iuc2hhcGVfY2FzdAB0cHUubWF0bXVsAGFyaXRoLmFkZGYAYXJpdGguYWRkaQBhcml0aC5zdWJpAGFyaXRoLm11bGkAdHB1LmlvdGEAYXJpdGguYW5kaQBhcml0aC5leHRmAGFyaXRoLnNlbGVjdABhcml0aC50cnVuY2YAL2hvbWUvYmJhaGwvbWluaWNvbmRhMy9lbnZzL3RvcmNoMzEwL2xpYi9weXRob24zLjEwL3NpdGUtcGFja2FnZXMvamF4L2V4cGVyaW1lbnRhbC9wYWxsYXMvb3BzL3RwdS9tZWdhYmxveC9nbW0ucHkAL2dldAB2YWx1ZQBfZ2V0X3N0b3JlX21hc2sAc3ltX25hbWUAa2VybmVsAF9zdG9yZV9hY2N1bQBmdW5jdGlvbl90eXBlAHByZWRpY2F0ZQAvY29udmVydF9lbGVtZW50X3R5cGUAX2FjY3VtAHRyYW5zZm9ybV9pbmRpY2VzAHdpbmRvd19ib3VuZHMAL2FkZAAvc3dhcAB0cmFuc2Zvcm1fMAB0cmFuc2Zvcm1fMQB0cmFuc2Zvcm1fMgAvZXEAL2NvbmQALQBzdGFibGVfbW9zYWljLnZlcnNpb24AZGltZW5zaW9uX3NlbWFudGljcwBpdGVyYXRpb25fYm91bmRzAHNjYWxhcl9wcmVmZXRjaABzY3JhdGNoX29wZXJhbmRzAG1haW4Ad2luZG93X3BhcmFtcwBvdXRfdHJhbnNmb3JtX2luZGljZXMAZ21tADxtb2R1bGU+AC9ob21lL2JiYWhsL3Rlc3RfZ21tLnB5AHJoc190cmFuc2Zvcm1faW5kaWNlcwBvdmVyZmxvd0ZsYWdzAC9zdWIAbGhzX3RyYW5zZm9ybV9pbmRpY2VzAC9kb3RfZ2VuZXJhbAB0cmFuc3Bvc2VfbGhzAHRyYW5zcG9zZV9yaHMAZmFzdG1hdGgAL211bABkaW1lbnNpb24AL2lvdGEAL2dlAC9sdAAvYW5kAC9zZWxlY3RfbgAvYnJvYWRjYXN0X2luX2RpbQBfemVyb19hY2MA\", \"cost_estimate\": {\"flops\": 1924145348608, \"transcendentals\": 0, \"bytes_accessed\": 8472494080}, \"serialization_format\": 1, \"needs_layout_passes\": true}, \"implicit_sharding\": {\"type\": \"MANUAL\"}}"
+        return torch_xla._XLAC._xla_tpu_custom_call([
+            num_tiles, group_offsets, group_ids, m_tile_ids, group_offset_torch, lhs, rhs], payload, [torch.Size([m, n])], [preferred_element_type])[0]
+
+
+
+    @staticmethod
+    # @xp.trace_me("gmm_forward")
     def forward(ctx, hidden_states: torch.Tensor, top_ks: torch.Tensor, w1: torch.Tensor, w2: torch.Tensor, w3: torch.Tensor) -> torch.Tensor:
         """
         Integrated with PyTorch/XLA Pallas gmm:
@@ -917,12 +953,13 @@ class Gmm(torch.autograd.Function):
 
         # Replicated MixtralBlockSparseTop2MLP.forward
         # Here we just use silu and ignore the configuration given we need to manually write the backward pass.
-        gmm1 = gmm(hidden_states_sorted, w1, group_sizes)
-        gmm3 =  gmm(hidden_states_sorted, w3, group_sizes)
+        # import pdb; pdb.set_trace();
+        gmm1 = Gmm.gmm_no_jax_gate1(hidden_states_sorted, w1, group_sizes)
+        gmm3 = Gmm.gmm_no_jax_gate1(hidden_states_sorted, w3, group_sizes)
          # Should I save silu activations?
         silu = F.silu(gmm1)
         sgmm = silu * gmm3
-        gmm2 = gmm(sgmm, w2, group_sizes)
+        gmm2 = Gmm.gmm_no_jax_gate2(sgmm, w2, group_sizes)
         current_hidden_states = gmm2[hidden_states_reverse_order].reshape(-1, k, n)
 
         # Exit manual sharding zone
@@ -957,7 +994,7 @@ class Gmm(torch.autograd.Function):
 
 
     @staticmethod
-    @xp.trace_me("gmm_backward")
+    # @xp.trace_me("gmm_backward")
     def backward(ctx, grad_output):
         from torch_xla.experimental.custom_kernel import _histogram, gmm_backward
 
@@ -1062,7 +1099,7 @@ class MixtralGmmTop2MLP(nn.Module):
         init.kaiming_uniform_(self.w2, a=math.sqrt(5))
         init.kaiming_uniform_(self.w3, a=math.sqrt(5))
 
-    @xp.trace_me("MixtralGmmTop2MLP")
+    # @xp.trace_me("MixtralGmmTop2MLP")
     def forward(self, hidden_states, top_ks):
         return Gmm.apply(hidden_states, top_ks, self.w1, self.w2, self.w3)
 
@@ -1091,7 +1128,6 @@ class MixtralSparseMoeBlock(nn.Module):
 
         # gating
         self.gate = nn.Linear(self.hidden_dim, self.num_experts, bias=False)
-
         if not self.gmm or self.gmm_stack:
             self.experts = nn.ModuleList([MixtralBlockSparseTop2MLP(config) for _ in range(self.num_experts)])
         else:
@@ -1100,7 +1136,7 @@ class MixtralSparseMoeBlock(nn.Module):
         # Jitter parameters
         self.jitter_noise = config.router_jitter_noise
 
-    @xp.trace_me("MixtralSparseMoeBlock")
+    # @xp.trace_me("MixtralSparseMoeBlock")
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """ """
         batch_size, sequence_length, hidden_dim = hidden_states.shape
@@ -1170,7 +1206,7 @@ class MixtralDecoderLayer(nn.Module):
         self.input_layernorm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = MixtralRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-    @xp.trace_me("MixtralDecoderLayer")
+    # @xp.trace_me("MixtralDecoderLayer")
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -1386,7 +1422,7 @@ class MixtralModel(MixtralPreTrainedModel):
 
     # Ignore copy
     @add_start_docstrings_to_model_forward(MIXTRAL_INPUTS_DOCSTRING)
-    @xp.trace_me("MixtralModel")
+    # @xp.trace_me("MixtralModel")
     def forward(
         self,
         input_ids: torch.LongTensor = None,
@@ -1585,7 +1621,7 @@ class MixtralForCausalLM(MixtralPreTrainedModel):
     @add_start_docstrings_to_model_forward(MIXTRAL_INPUTS_DOCSTRING)
     @replace_return_docstrings(output_type=MoeCausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
     # Ignore copy
-    @xp.trace_me("MixtralForCausalLM")
+    # @xp.trace_me("MixtralForCausalLM")
     def forward(
         self,
         input_ids: torch.LongTensor = None,
