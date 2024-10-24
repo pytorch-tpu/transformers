@@ -127,6 +127,7 @@ from .trainer_utils import (
     set_seed,
     speed_metrics,
 )
+import torch_xla.distributed.parallel_loader as pl
 from .training_args import OptimizerNames, ParallelMode, TrainingArguments
 from .utils import (
     ADAPTER_CONFIG_NAME,
@@ -263,7 +264,7 @@ if TYPE_CHECKING:
         import datasets
 
 logger = logging.get_logger(__name__)
-
+SINGLE_SLICE=os.environ.get('SINGLE_SLICE', None)
 
 # Name of the files used for checkpointing
 TRAINING_ARGS_NAME = "training_args.bin"
@@ -381,6 +382,7 @@ class Trainer:
             args = TrainingArguments(output_dir=output_dir)
         self.args = args
         # Seed must be set before instantiating the model when using model
+        set_seed(self.args.seed)
         enable_full_determinism(self.args.seed) if self.args.full_determinism else set_seed(self.args.seed)
         self.hp_name = None
         self.deepspeed = None
@@ -679,6 +681,18 @@ class Trainer:
             # Tensor axis is just a placeholder where it will not be used in FSDPv2.
             num_devices = xr.global_runtime_device_count()
             xs.set_global_mesh(xs.Mesh(np.array(range(num_devices)), (num_devices, 1), axis_names=("fsdp", "tensor")))
+            if SINGLE_SLICE:
+                mesh_shape = (num_devices, 1)
+                device_ids = np.array(range(num_devices))
+                # To be noted, the mesh must have an axis named 'fsdp', which the weights and activations will be sharded on.
+                mesh = xs.Mesh(device_ids, mesh_shape, ('fsdp', 'tensor'))
+                xs.set_global_mesh(mesh)
+            else:
+                dcn_axis = 2
+                ici_mesh_shape = (1, num_devices // dcn_axis)
+                dcn_mesh_shape = (dcn_axis, 1)
+                mesh = xs.HybridMesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape, axis_names=('dcn', 'fsdp'))
+                xs.set_global_mesh(mesh)
 
     def _activate_neftune(self, model):
         r"""
@@ -876,6 +890,24 @@ class Trainer:
             dataloader_params["drop_last"] = self.args.dataloader_drop_last
             dataloader_params["worker_init_fn"] = seed_worker
             dataloader_params["prefetch_factor"] = self.args.dataloader_prefetch_factor
+
+
+        if is_torch_xla_available():
+            torch_dataloader = DataLoader(train_dataset, **dataloader_params)
+            device = xm.xla_device()
+            if SINGLE_SLICE:
+                mp_device_loader = pl.MpDeviceLoader(
+                    torch_dataloader,
+                    device,
+                    input_sharding=xs.ShardingSpec(xs.get_global_mesh(), ("fsdp", None)),
+                )
+            else:
+                mp_device_loader = pl.MpDeviceLoader(
+                    torch_dataloader,
+                    device,
+                    input_sharding=xs.ShardingSpec(xs.get_global_mesh(), (("dcn", "fsdp"), None)),
+                )   
+            return mp_device_loader             
 
         return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params))
 
@@ -1681,7 +1713,6 @@ class Trainer:
                     # Transformer layer class to wrap
                     transformer_layer_cls=transformer_cls_to_wrap,
                 )
-            fsdp_kwargs = self.args.xla_fsdp_config
             if self.args.fsdp_config["xla_fsdp_grad_ckpt"]:
                 if model.config.use_cache:
                     logger.warning_once(
@@ -1709,7 +1740,11 @@ class Trainer:
 
                     if real_output is None:
                         raise ValueError("Something went wrong, the output of the model shouldn't be `None`")
-                    xs.mark_sharding(real_output, mesh, ("fsdp", None, None))
+
+                    if SINGLE_SLICE:
+                        xs.mark_sharding(real_output, mesh, ("fsdp", None, None))
+                    else:
+                        xs.mark_sharding(real_output, mesh, (("dcn", "fsdp"), None, None))
 
                 self.model = model = FSDPv2(
                     model,
@@ -1718,10 +1753,12 @@ class Trainer:
                     auto_wrapper_callable=auto_wrapper_callable,
                 )
             else:
+                fsdp_kwargs = self.args.xla_fsdp_config
                 self.model = model = FSDP(
                     model,
                     auto_wrap_policy=auto_wrap_policy,
                     auto_wrapper_callable=auto_wrapper_callable,
+                    reshard_after_forward=False,
                     **fsdp_kwargs,
                 )
 
@@ -1854,6 +1891,7 @@ class Trainer:
                 # Disable progress bars when uploading models during checkpoints to avoid polluting stdout
                 hf_hub_utils.disable_progress_bars()
                 return inner_training_loop(
+                    batch_size=self._train_batch_size,
                     args=args,
                     resume_from_checkpoint=resume_from_checkpoint,
                     trial=trial,
@@ -1863,6 +1901,7 @@ class Trainer:
                 hf_hub_utils.enable_progress_bars()
         else:
             return inner_training_loop(
+                batch_size=self._train_batch_size,
                 args=args,
                 resume_from_checkpoint=resume_from_checkpoint,
                 trial=trial,
@@ -1892,8 +1931,8 @@ class Trainer:
         logger.debug(f"Currently training with a batch size of: {self._train_batch_size}")
         # Data loader and number of training steps
         train_dataloader = self.get_train_dataloader()
-        if self.is_fsdp_xla_v2_enabled:
-            train_dataloader = tpu_spmd_dataloader(train_dataloader)
+        # if self.is_fsdp_xla_v2_enabled:
+        #     train_dataloader = tpu_spmd_dataloader(train_dataloader)
 
         # Setting up training control variables:
         # number of training epochs: num_train_epochs
@@ -4454,3 +4493,4 @@ class Trainer:
                 fsdp_plugin.set_mixed_precision(
                     self.model.hf_quantizer.quantization_config.bnb_4bit_quant_storage, override=True
                 )
+
