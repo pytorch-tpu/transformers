@@ -20,6 +20,7 @@
 """PyTorch LLaMA model."""
 
 import math
+import os
 import warnings
 from typing import List, Optional, Tuple, Union
 
@@ -61,6 +62,7 @@ logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "LlamaConfig"
 
+SINGLE_SLICE=os.environ.get('SINGLE_SLICE', None)
 
 def _get_unpad_data(attention_mask):
     seqlens_in_batch = attention_mask.sum(dim=-1, dtype=torch.int32)
@@ -387,7 +389,11 @@ class LlamaAttention(nn.Module):
             # Integrated with PyTorch/XLA Pallas Flash Attention:
             from torch_xla.experimental.custom_kernel import flash_attention
             query_states /= math.sqrt(self.head_dim)
-            attn_output = flash_attention(query_states, key_states, value_states, causal=True, partition_spec=('fsdp', 'tensor', None, None))
+            if SINGLE_SLICE:
+                attn_output = flash_attention(query_states, key_states, value_states, causal=True, partition_spec=('fsdp', 'tensor', None, None))
+            else:
+                attn_output = flash_attention(query_states, key_states, value_states, causal=True, partition_spec=('dcn', 'fsdp', None, None))
+
 
         if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
             raise ValueError(
