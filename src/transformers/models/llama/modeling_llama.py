@@ -1019,6 +1019,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     "cache_position": cache_position,
                     "position_embeddings": position_embeddings,
                     "layer_outputs": layer_outputs,
+                    "embed_tokens": self.embed_tokens,
                 }
                 with open(f"{local_dir}/debug_nan/decoder_states.pkl", "wb") as f:
                     pickle.dump(serialize(decoder_states), f)
