@@ -2068,10 +2068,12 @@ class Trainer:
         steps_trained_in_current_epoch = 0
         steps_trained_progress_bar = None
 
+        logger.warning("piz_debug:1")
         # Check if continuing training from a checkpoint
         if resume_from_checkpoint is not None and os.path.isfile(
             os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME)
         ):
+            logger.warning("piz_debug:2")
             self.state = TrainerState.load_from_json(os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME))
             self.compare_trainer_and_checkpoint_args(self.args, self.state)
             epochs_trained = self.state.global_step // num_update_steps_per_epoch
@@ -2090,6 +2092,7 @@ class Trainer:
                     f" {steps_trained_in_current_epoch} batches in the first epoch."
                 )
 
+        logger.warning("piz_debug:3")
         # Update the references
         self.callback_handler.model = self.model
         self.callback_handler.optimizer = self.optimizer
@@ -2106,6 +2109,7 @@ class Trainer:
             self.state.trial_params = None
         # This should be the same if the state has been saved but in case the training arguments changed, it's safer
         # to set this after the load.
+        logger.warning("piz_debug:4")
         self.state.max_steps = max_steps
         self.state.num_train_epochs = num_train_epochs
         self.state.is_local_process_zero = self.is_local_process_zero()
@@ -2121,8 +2125,10 @@ class Trainer:
 
         self.control = self.callback_handler.on_train_begin(args, self.state, self.control)
 
+        logger.warning("piz_debug:5")
         # Skip the first epochs_trained epochs to get the random state of the dataloader at the right point.
         if not args.ignore_data_skip:
+            logger.warning("piz_debug:6")
             for epoch in range(epochs_trained):
                 sampler = get_dataloader_sampler(train_dataloader)
                 sampler_kinds = [RandomSampler]
@@ -2140,13 +2146,15 @@ class Trainer:
                     _ = list(sampler)
 
         total_batched_samples = 0
-        server = xp.start_server(9012)
-        logger.info(f'Profiling server started: {str(server)}')
-        profile_step = int(os.environ.get('PROFILE_STEP', -1))
-        profile_epoch = int(os.environ.get('PROFILE_EPOCH', -1))
-        profile_duration = int(os.environ.get('PROFILE_DURATION_MS', 20000))
-        profile_logdir = os.environ.get('PROFILE_LOGDIR', None)
+        # server = xp.start_server(9012)
+        # logger.info(f'Profiling server started: {str(server)}')
+        # profile_step = int(os.environ.get('PROFILE_STEP', -1))
+        # profile_epoch = int(os.environ.get('PROFILE_EPOCH', -1))
+        # profile_duration = int(os.environ.get('PROFILE_DURATION_MS', 20000))
+        # profile_logdir = os.environ.get('PROFILE_LOGDIR', None)
+        logger.warning("piz_debug:7")
         for epoch in range(epochs_trained, num_train_epochs):
+            logger.warning(f"piz_debug:8-{epoch}")
             epoch_iterator = train_dataloader
             if hasattr(epoch_iterator, "set_epoch"):
                 epoch_iterator.set_epoch(epoch)
@@ -2174,6 +2182,7 @@ class Trainer:
                 rng_to_sync = True
 
             step = -1
+            logger.warning(f"piz_debug:9-{epoch}")
             for step, inputs in enumerate(epoch_iterator):
                 total_batched_samples += 1
 
@@ -2196,6 +2205,7 @@ class Trainer:
                     self._load_rng_state(resume_from_checkpoint)
                     rng_to_sync = False
 
+                logger.warning(f"piz_debug:10-{epoch}")
                 # Skip past any already trained steps if resuming training
                 if steps_trained_in_current_epoch > 0:
                     steps_trained_in_current_epoch -= 1
@@ -2208,20 +2218,29 @@ class Trainer:
                     steps_trained_progress_bar.close()
                     steps_trained_progress_bar = None
 
+                logger.warning(f"piz_debug:10.1-{epoch}")
                 if step % args.gradient_accumulation_steps == 0:
                     self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
-                with self.accelerator.accumulate(model):
-                    tr_loss_step = self.training_step(model, inputs)
+                # logger.warning(f"piz_debug:10.2-{epoch}")
+                # with self.accelerator.accumulate(model):
+                #     logger.warning(f"piz_debug:10.3-{epoch}")
+                #     tr_loss_step = self.training_step(model, inputs)
+                #     logger.warning(f"piz_debug:10.3.1-{epoch}")
+                tr_loss_step = self.training_step(model, inputs)
 
-                if (
-                    args.logging_nan_inf_filter
-                    and not is_torch_xla_available()
-                    and (torch.isnan(tr_loss_step) or torch.isinf(tr_loss_step))
-                ):
+                logger.warning(f"piz_debug:10.3.2-{epoch}")
+                # if (
+                #     args.logging_nan_inf_filter
+                #     and not is_torch_xla_available()
+                #     and (torch.isnan(tr_loss_step) or torch.isinf(tr_loss_step))
+                # ):
+                if False:
                     # if loss is nan or inf simply add the average of previous logged losses
+                    logger.warning(f"piz_debug:10.4-{epoch}")
                     tr_loss += tr_loss / (1 + self.state.global_step - self._globalstep_last_logged)
                 else:
+                    logger.warning(f"piz_debug:10.5-{epoch}")
                     if tr_loss.device != tr_loss_step.device:
                         raise ValueError(
                             f"Calculated loss must be on the original device: {tr_loss.device} but device in use is {tr_loss_step.device}"
@@ -2230,10 +2249,12 @@ class Trainer:
 
                 self.current_flos += float(self.floating_point_ops(inputs))
 
+                logger.warning(f"piz_debug:10.6-{epoch}")
                 is_last_step_and_steps_less_than_grad_acc = (
                     steps_in_epoch <= args.gradient_accumulation_steps and (step + 1) == steps_in_epoch
                 )
 
+                logger.warning(f"piz_debug:11-{epoch}")
                 if (
                     total_batched_samples % args.gradient_accumulation_steps == 0
                     or
@@ -2291,13 +2312,15 @@ class Trainer:
                 else:
                     self.control = self.callback_handler.on_substep_end(args, self.state, self.control)
 
-                if step == profile_step and epoch == profile_epoch:
+                logger.warning(f"piz_debug:12-{epoch}")
+                # if step == profile_step and epoch == profile_epoch:
+                if step == 3 and epoch == 0:
                     # Wait until device execution catches up to tracing before triggering the profile. This will
                     # interrupt training slightly on the hosts which are capturing, but by waiting after tracing
                     # for the step, the interruption will be minimal.
                     xm.wait_device_ops()
                     import tempfile
-                    xp.trace_detached('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
+                    # xp.trace_detached('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
 
                 if self.control.should_epoch_stop or self.control.should_training_stop:
                     # PyTorch/XLA relies on the data loader to insert the mark_step for
@@ -2314,6 +2337,7 @@ class Trainer:
                 )
                 self.control.should_training_stop = True
 
+            logger.warning(f"piz_debug:13")
             self.control = self.callback_handler.on_epoch_end(args, self.state, self.control)
             self._maybe_log_save_evaluate(tr_loss, grad_norm, model, trial, epoch, ignore_keys_for_eval)
 
@@ -2329,6 +2353,7 @@ class Trainer:
             if self.control.should_training_stop:
                 break
 
+        logger.warning(f"piz_debug:14")
         if args.past_index and hasattr(self, "_past"):
             # Clean the state at the end of training
             delattr(self, "_past")
@@ -3147,25 +3172,36 @@ class Trainer:
         Return:
             `torch.Tensor`: The tensor with training loss on this batch.
         """
+        logger.warning(f"piz_debug: train 1")
         model.train()
+        logger.warning(f"piz_debug: train 2")
         inputs = self._prepare_inputs(inputs)
+        logger.warning(f"piz_debug: train 3")
 
         if is_sagemaker_mp_enabled():
+            logger.warning(f"piz_debug: train 4")
             loss_mb = smp_forward_backward(model, inputs, self.args.gradient_accumulation_steps)
             return loss_mb.reduce_mean().detach().to(self.args.device)
 
+        logger.warning(f"piz_debug: train 5")
         with self.compute_loss_context_manager():
+            logger.warning(f"piz_debug: train 6")
             loss = self.compute_loss(model, inputs)
 
         if self.args.n_gpu > 1:
+            logger.warning(f"piz_debug: train 7")
             loss = loss.mean()  # mean() to average on multi-gpu parallel training
 
+        logger.warning(f"piz_debug: train 8")
         if self.use_apex:
             with amp.scale_loss(loss, self.optimizer) as scaled_loss:
                 scaled_loss.backward()
         else:
+            logger.warning(f"piz_debug: train 9")
             self.accelerator.backward(loss)
+            logger.warning(f"piz_debug: train 10")
 
+        logger.warning(f"piz_debug: train 11")
         return loss.detach() / self.args.gradient_accumulation_steps
 
     def compute_loss(self, model, inputs, return_outputs=False):
@@ -3174,35 +3210,52 @@ class Trainer:
 
         Subclass and override for custom behavior.
         """
+        logger.warning(f"piz_debug: compute_loss 1")
         if self.label_smoother is not None and "labels" in inputs:
             labels = inputs.pop("labels")
         else:
             labels = None
-        outputs = model(**inputs)
+        logger.warning(f"piz_debug: compute_loss 2")
+        outputs = model(**inputs) # PIZ: issue here
+        logger.warning(f"piz_debug: compute_loss 3")
         # Save past state if it exists
         # TODO: this needs to be fixed and made cleaner later.
         if self.args.past_index >= 0:
+            logger.warning(f"piz_debug: compute_loss 4")
             self._past = outputs[self.args.past_index]
 
+        logger.warning(f"piz_debug: compute_loss 5")
         if labels is not None:
+            logger.warning(f"piz_debug: compute_loss 6")
             unwrapped_model = unwrap_model(model)
+            logger.warning(f"piz_debug: compute_loss 7")
             if _is_peft_model(unwrapped_model):
+                logger.warning(f"piz_debug: compute_loss 8")
                 model_name = unwrapped_model.base_model.model._get_name()
             else:
+                logger.warning(f"piz_debug: compute_loss 9")
                 model_name = unwrapped_model._get_name()
+            logger.warning(f"piz_debug: compute_loss 10")
             if model_name in MODEL_FOR_CAUSAL_LM_MAPPING_NAMES.values():
+                logger.warning(f"piz_debug: compute_loss 11")
                 loss = self.label_smoother(outputs, labels, shift_labels=True)
             else:
+                logger.warning(f"piz_debug: compute_loss 12")
                 loss = self.label_smoother(outputs, labels)
+            logger.warning(f"piz_debug: compute_loss 13")
         else:
+            logger.warning(f"piz_debug: compute_loss 14")
             if isinstance(outputs, dict) and "loss" not in outputs:
                 raise ValueError(
                     "The model did not return a loss from the inputs, only the following keys: "
                     f"{','.join(outputs.keys())}. For reference, the inputs it received are {','.join(inputs.keys())}."
                 )
             # We don't use .loss here since the model may return tuples instead of ModelOutput.
+            logger.warning(f"piz_debug: compute_loss 15")
             loss = outputs["loss"] if isinstance(outputs, dict) else outputs[0]
+            logger.warning(f"piz_debug: compute_loss 16")
 
+        logger.warning(f"piz_debug: compute_loss 17")
         return (loss, outputs) if return_outputs else loss
 
     def is_local_process_zero(self) -> bool:
