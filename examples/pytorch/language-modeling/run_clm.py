@@ -32,6 +32,7 @@ from typing import Optional
 import datasets
 import evaluate
 import torch
+import torch.nn as nn
 from datasets import load_dataset
 
 import transformers
@@ -520,7 +521,26 @@ def main():
         from torch_xla.distributed.fsdp import checkpoint_module
         for i, block in enumerate(model.model.layers):
             model.model.layers[i] = checkpoint_module(block)
-        # materalize all weights after 2d sharding
+        # materialize all weights after 2d sharding
+        torch_xla.sync()
+
+        # Force reset the content within `embed_tokens` to random values.
+        # we observed that `inputs_embeds` has NaN. This means either the
+        # token to embedding transformation has bugs, or that the
+        # `input_embeds` has NaN. This is meant to rule out the second
+        # possibility.
+        for name, param in model.named_parameters():
+            if 'embed_tokens' in name:
+                print("NOTE: Re-initializing param to random values")
+                nn.init.normal_(param.data, mean=0.0, std=0.01)
+        torch_xla.sync()
+
+        for name, param in model.named_parameters():
+            if 'embed_tokens' in name:
+                if torch.isnan(param).any():
+                    raise RuntimeError(f"Parameter '{name}' still contains NaN values after initialization.")
+                else:
+                    print(f"Parameter '{name}' successfully re-initialized without NaNs.")
         torch_xla.sync()
 
     # Preprocessing the datasets.
