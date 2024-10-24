@@ -58,6 +58,15 @@ if is_flash_attn_2_available():
 
 import torch_xla.debug.profiler as xp
 
+import pickle
+import os
+import numpy as np
+
+import torch
+from torch import nn
+from collections.abc import Mapping, Sequence
+
+
 logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "LlamaConfig"
@@ -943,7 +952,7 @@ class LlamaModel(LlamaPreTrainedModel):
         all_self_attns = () if output_attentions else None
         next_decoder_cache = None
 
-        for decoder_layer in self.layers:
+        for decoder_idx, decoder_layer in enumerate(self.layers):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
@@ -970,6 +979,51 @@ class LlamaModel(LlamaPreTrainedModel):
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
                 )
+
+            # DEBUGGING ONLY: check if layer outputs has NaN. If yes, pickle all decoder inputs
+            # and outputs into a dict and store it at `${LOCAL_DIR}/debug_nan/decoder_inputs.pkl`.
+            if torch.isnan(layer_outputs[0]).any():
+                def serialize(obj):
+                    if obj is None:
+                        return obj
+                    if isinstance(obj, bool):
+                        return obj
+                    if isinstance(obj, float):
+                        return obj
+                    if isinstance(obj, int):
+                        return obj
+                    if isinstance(obj, np.ndarray):
+                        return obj
+                    if isinstance(obj, torch.Tensor):
+                        return obj.detach().cpu()
+                    if isinstance(obj, nn.Module):
+                        return serialize(obj.state_dict())
+                    if isinstance(obj, Mapping):
+                        return {k: serialize(v) for k, v in obj.items()}
+                    if isinstance(obj, Sequence) and not isinstance(obj, (str, bytes)):
+                        return [serialize(item) for item in obj]
+                    return obj
+
+                logger.warning_once(
+                    "NaN detected in decoder layer outputs. Saving decoder states."
+                )
+                local_dir = os.getenv("LOCAL_DIR")
+                os.makedirs(f"{local_dir}/debug_nan", exist_ok=True)
+                decoder_states = {
+                    "hidden_states": hidden_states,
+                    "attention_mask": causal_mask,
+                    "position_ids": position_ids,
+                    "past_key_values": past_key_values,
+                    "output_attentions": output_attentions,
+                    "use_cache": use_cache,
+                    "cache_position": cache_position,
+                    "position_embeddings": position_embeddings,
+                    "layer_outputs": layer_outputs,
+                }
+                with open(f"{local_dir}/debug_nan/decoder_states.pkl", "wb") as f:
+                    pickle.dump(serialize(decoder_states), f)
+
+                raise RuntimeError(f"At layer {decoder_idx}, NaN detected in decoder layer outputs.")
 
             hidden_states = layer_outputs[0]
 
