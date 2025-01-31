@@ -742,6 +742,8 @@ def main():
                 xs.mark_sharding(param, spmd_mesh, ('expert', None, None))
             elif 'lm_head' in name:
                 xs.mark_sharding(param, spmd_mesh, (('tensor', 'fsdp', 'expert'), None))  # keep this fsdp.
+            elif 'gate' in name:
+                xs.mark_sharding(param, spmd_mesh, (None, ('fsdp', 'expert')))
 
             print(f'{name} {torch_xla._XLAC._get_xla_sharding_spec(param)}')
 
