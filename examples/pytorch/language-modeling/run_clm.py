@@ -738,8 +738,10 @@ def main():
                 xs.mark_sharding(param, spmd_mesh, ('tensor', ('fsdp', 'expert')))
             elif 'o_proj' in name:
                 xs.mark_sharding(param, spmd_mesh, (('fsdp', 'expert'), 'tensor'))
-            elif 'w1' in name or 'w3' in name or 'w2' in name:
-                xs.mark_sharding(param, spmd_mesh, ('expert', None, None))
+            elif 'w1' in name or 'w3' in name:
+                xs.mark_sharding(param, spmd_mesh, ('expert', 'fsdp', 'tensor'))
+            elif 'w2' in name:
+                 xs.mark_sharding(param, spmd_mesh, ('expert', 'tensor', 'fsdp'))
             elif 'lm_head' in name:
                 xs.mark_sharding(param, spmd_mesh, (('tensor', 'fsdp', 'expert'), None))  # keep this fsdp.
             elif 'gate' in name:
