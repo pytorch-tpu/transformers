@@ -853,7 +853,7 @@ class MixtralExpertParallelTop2MLP(nn.Module):
     def forward(self, dispatch_input):
         mesh = xs.get_global_mesh()
         # Create a new node to keep the original sharding spec.
-        device = dispatch_input.device()
+        device = dispatch_input.device
         zero = torch.zeros((1,), device=device, dtype=dispatch_input.dtype)
         full_w1 = self.w1 + zero
         full_w2 = self.w2 + zero
