@@ -831,6 +831,20 @@ class MixtralBlockSparseTop2MLP(nn.Module):
         current_hidden_states = self.w2(current_hidden_states)
         return current_hidden_states
 
+class mark_sharding_ebcm_func(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, torch_tensor: torch.Tensor) -> torch.Tensor:
+        mesh = xs.get_global_mesh()
+        xs.mark_sharding(torch_tensor, mesh, ('expert', 'fsdp', None, None))
+        return torch_tensor
+    
+    @staticmethod
+    def backward(ctx, torch_tensor: torch.Tensor) -> torch.Tensor:
+        print("running_backward", flush=True)
+        mesh = xs.get_global_mesh()
+        xs.mark_sharding(torch_tensor, mesh, ('expert', 'fsdp', None, None))
+        return torch_tensor
+
 
 class MixtralExpertParallelTop2MLP(nn.Module):
     def __init__(self, config: MixtralConfig):
@@ -842,6 +856,7 @@ class MixtralExpertParallelTop2MLP(nn.Module):
         self.w1 = nn.Parameter(torch.empty(self.num_experts, self.hidden_dim, self.ffn_dim))
         self.w2 = nn.Parameter(torch.empty(self.num_experts, self.ffn_dim, self.hidden_dim))
         self.w3 = nn.Parameter(torch.empty(self.num_experts, self.hidden_dim, self.ffn_dim))
+        self.mark_sharding_fn = mark_sharding_ebcm_func.apply
 
         self.act_fn = ACT2FN[config.hidden_act]
 
@@ -864,26 +879,28 @@ class MixtralExpertParallelTop2MLP(nn.Module):
 
         layer_w1 = torch.einsum("ebcm,emh->ebch", dispatch_input, full_w1)
         if NUM_TPU_SLICE == 1:
-            xs.mark_sharding(layer_w1, mesh, ('expert', 'fsdp', None, None))
+            # xs.mark_sharding(layer_w1, mesh, ('expert', 'fsdp', None, None))
+            self.mark_sharding_fn(layer_w1)
         else:
             xs.mark_sharding(layer_w1, mesh, (None, ('dcn', 'fsdp'), None, None))
-        # TODO(bbahl): checkpoint intermediate tensor layer_w1
 
         layer_w3 = torch.einsum("ebcm,emh->ebch", dispatch_input, full_w3)
         if NUM_TPU_SLICE == 1:
-            xs.mark_sharding(layer_w3, mesh, ('expert', 'fsdp', None, None))
+            # xs.mark_sharding(layer_w3, mesh, ('expert', 'fsdp', None, None))
+            self.mark_sharding_fn(layer_w3)
         else:
             xs.mark_sharding(layer_w3, mesh, (None, ('dcn', 'fsdp'), None, None))
-        # TODO(bbahl): checkpoint intermediate tensor layer_w3
 
         layer_multiply = self.act_fn(layer_w1) * layer_w3
 
+        self.mark_sharding_fn(layer_multiply)
+
         intermediate_layer = torch.einsum("ebch,ehm->ebcm", layer_multiply, full_w2)
         if NUM_TPU_SLICE == 1:
-            xs.mark_sharding(intermediate_layer, mesh, ('expert', 'fsdp', None, None))
+            # xs.mark_sharding(intermediate_layer, mesh, ('expert', 'fsdp', None, None))
+            self.mark_sharding_fn(intermediate_layer)
         else:
             xs.mark_sharding(intermediate_layer, mesh, (None, ('dcn', 'fsdp'), None, None))
-        # TODO(bbahl): checkpoint intermediate_layer
         return intermediate_layer
 
 class MixtralBLockSparseTop2MLP(MixtralBlockSparseTop2MLP):
@@ -1287,7 +1304,8 @@ class MixtralSparseMoeBlock(nn.Module):
                 with xp.Trace("bsm,bsec->ebcm"):
                     dispatch = torch.einsum("bsm,bsec->ebcm", hidden_states, dispatch_mask)
                 if NUM_TPU_SLICE == 1:
-                    xs.mark_sharding(dispatch, mesh, ('expert', 'fsdp', None, None))
+                    # xs.mark_sharding(dispatch, mesh, ('expert', 'fsdp', None, None))
+                    mark_sharding_ebcm_func.apply(dispatch)
                 else:
                     xs.mark_sharding(dispatch, mesh, (None, ('dcn', 'fsdp'), None, None))
 
