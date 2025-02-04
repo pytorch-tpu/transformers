@@ -415,7 +415,8 @@ class MixtralAttention(nn.Module):
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
 
         attn_output = self.o_proj(attn_output)
-
+        mesh = xs.get_global_mesh()
+        xs.mark_sharding(attn_output, mesh, (('fsdp', 'expert'), None, 'tensor'))
         if not output_attentions:
             attn_weights = None
 
@@ -851,14 +852,24 @@ class MixtralExpertParallelTop2MLP(nn.Module):
     @xp.trace_me("MixtralExpertParallelTop2MLP")
     def forward(self, dispatch_input):
         mesh = xs.get_global_mesh()
-        layer_w1 = torch.einsum("ebcm,emh->ebch", dispatch_input, self.w1)
+        # Create a new node to keep the original sharding spec.
+        device = dispatch_input.device()
+        zero = torch.zeros((1,), device=device, dtype=dispatch_input.dtype)
+        full_w1 = self.w1 + zero
+        full_w2 = self.w2 + zero
+        full_w3 = self.w3 + zero
+        xs.mark_sharding(full_w1, mesh, ('expert', None, 'tensor'))
+        xs.mark_sharding(full_w2, mesh, ('expert', 'tensor', None))
+        xs.mark_sharding(full_w3, mesh, ('expert', None, 'tensor'))
+
+        layer_w1 = torch.einsum("ebcm,emh->ebch", dispatch_input, full_w1)
         if NUM_TPU_SLICE == 1:
             xs.mark_sharding(layer_w1, mesh, ('expert', 'fsdp', None, None))
         else:
             xs.mark_sharding(layer_w1, mesh, (None, ('dcn', 'fsdp'), None, None))
         # TODO(bbahl): checkpoint intermediate tensor layer_w1
 
-        layer_w3 = torch.einsum("ebcm,emh->ebch", dispatch_input, self.w3)
+        layer_w3 = torch.einsum("ebcm,emh->ebch", dispatch_input, full_w3)
         if NUM_TPU_SLICE == 1:
             xs.mark_sharding(layer_w3, mesh, ('expert', 'fsdp', None, None))
         else:
@@ -867,7 +878,7 @@ class MixtralExpertParallelTop2MLP(nn.Module):
 
         layer_multiply = self.act_fn(layer_w1) * layer_w3
 
-        intermediate_layer = torch.einsum("ebch,ehm->ebcm", layer_multiply, self.w2)
+        intermediate_layer = torch.einsum("ebch,ehm->ebcm", layer_multiply, full_w2)
         if NUM_TPU_SLICE == 1:
             xs.mark_sharding(intermediate_layer, mesh, ('expert', 'fsdp', None, None))
         else:
@@ -1244,11 +1255,11 @@ class MixtralSparseMoeBlock(nn.Module):
         batch_size, sequence_length, hidden_dim = hidden_states.shape
         if self.training and self.jitter_noise > 0:
             hidden_states *= torch.empty_like(hidden_states).uniform_(1.0 - self.jitter_noise, 1.0 + self.jitter_noise)
-        hidden_states = hidden_states.view(-1, hidden_dim)
-        # router_logits: (batch * sequence_length, n_experts)
+        # hidden_states = hidden_states.view(-1, hidden_dim)
+        # router_logits: (batch ,sequence_length, n_experts)
         router_logits = self.gate(hidden_states)
 
-        expert_weights = F.softmax(router_logits, dim=1, dtype=torch.float)
+        expert_weights = F.softmax(router_logits, dim=2, dtype=torch.float)
         routing_weights, selected_experts = torch.topk(expert_weights, self.top_k, dim=-1)
         routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
         # we cast back to the input dtype
@@ -1256,10 +1267,10 @@ class MixtralSparseMoeBlock(nn.Module):
 
         if not self.gmm and not self.gmm_stack:
             if self.capacity_factor > 0:
-                hidden_states = hidden_states.view(batch_size, sequence_length, hidden_dim)
+                # hidden_states = hidden_states.view(batch_size, sequence_length, hidden_dim)
                 mesh = xs.get_global_mesh()
-                selected_experts = selected_experts.view(batch_size, sequence_length, self.top_k)
-                expert_weights = expert_weights.view(batch_size, sequence_length, self.num_experts)
+                # selected_experts = selected_experts.view(batch_size, sequence_length, self.top_k)
+                # expert_weights = expert_weights.view(batch_size, sequence_length, self.num_experts)
                 dispatch_mask, combine_mask = self.generate_masks(selected_experts, expert_weights, mesh)
                 if NUM_TPU_SLICE == 1:
                     mask_axes = (('fsdp', 'expert'), None, None, None)
