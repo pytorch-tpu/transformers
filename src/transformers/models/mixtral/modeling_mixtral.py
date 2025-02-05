@@ -877,14 +877,14 @@ class MixtralExpertParallelTop2MLP(nn.Module):
         xs.mark_sharding(full_w2, mesh, ('expert', 'tensor', None))
         xs.mark_sharding(full_w3, mesh, ('expert', None, 'tensor'))
 
-        layer_w1 = torch.einsum("ebcm,emh->ebch", dispatch_input, full_w1)
+        layer_w1 = torch.einsum("bmec,emh->ebch", dispatch_input, full_w1)
         if NUM_TPU_SLICE == 1:
             # xs.mark_sharding(layer_w1, mesh, ('expert', 'fsdp', None, None))
             self.mark_sharding_fn(layer_w1)
         else:
             xs.mark_sharding(layer_w1, mesh, (None, ('dcn', 'fsdp'), None, None))
 
-        layer_w3 = torch.einsum("ebcm,emh->ebch", dispatch_input, full_w3)
+        layer_w3 = torch.einsum("bmec,emh->ebch", dispatch_input, full_w3)
         if NUM_TPU_SLICE == 1:
             # xs.mark_sharding(layer_w3, mesh, ('expert', 'fsdp', None, None))
             self.mark_sharding_fn(layer_w3)
@@ -1301,8 +1301,8 @@ class MixtralSparseMoeBlock(nn.Module):
                     xs.mark_sharding(hidden_states, mesh, (('fsdp', 'expert'), None, None))
                 else:
                     xs.mark_sharding(hidden_states, mesh, (('dcn', 'fsdp'), None, None))
-                with xp.Trace("bsm,bsec->ebcm"):
-                    dispatch = torch.einsum("bsm,bsec->ebcm", hidden_states, dispatch_mask)
+                with xp.Trace("bsm,bsec->bmec"):
+                    dispatch = torch.einsum("bsm,bsec->bmec", hidden_states, dispatch_mask)
                 if NUM_TPU_SLICE == 1:
                     # xs.mark_sharding(dispatch, mesh, ('expert', 'fsdp', None, None))
                     mark_sharding_ebcm_func.apply(dispatch)
