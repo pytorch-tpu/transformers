@@ -869,7 +869,7 @@ class MixtralExpertParallelTop2MLP(nn.Module):
         self.w1 = nn.Parameter(torch.empty(self.num_experts, self.hidden_dim, self.ffn_dim))
         self.w2 = nn.Parameter(torch.empty(self.num_experts, self.ffn_dim, self.hidden_dim))
         self.w3 = nn.Parameter(torch.empty(self.num_experts, self.hidden_dim, self.ffn_dim))
-        self.mark_sharding_fn = mark_sharding_ebcm_func.apply
+        self.mark_sharding_fn = mark_sharding_bech_func.apply
 
         self.act_fn = ACT2FN[config.hidden_act]
 
