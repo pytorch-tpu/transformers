@@ -1320,11 +1320,15 @@ class MixtralSparseMoeBlock(nn.Module):
                 with xp.Trace("bsm,bsec->becm"):
                     dispatch = torch.einsum("bsm,bsec->becm", hidden_states, dispatch_mask)
                 if NUM_TPU_SLICE == 1:
-                    xs.mark_sharding(dispatch, mesh, ('fsdp', 'expert', None, None))
+                    mark_sharding_bech_func.apply(dispatch)
+                    # xs.mark_sharding(dispatch, mesh, ('fsdp', 'expert', None, None))
                 else:
                     xs.mark_sharding(dispatch, mesh, (None, ('dcn', 'fsdp'), None, None))
 
                 expert_layer = self.experts(dispatch)
+                print(f"DEBUG {expert_layer.shape}", flush=True)
+                print(f"DEBUG {combine_mask.shape}", flush=True)
+                print(f"DEBUG {dispatch_mask.shape}", flush=True)
 
                 with xp.Trace("becm,bsec -> bsm"):
                     output = torch.einsum("becm,bsec -> bsm", expert_layer, combine_mask)
