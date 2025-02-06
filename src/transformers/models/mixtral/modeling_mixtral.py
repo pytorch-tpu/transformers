@@ -831,32 +831,32 @@ class MixtralBlockSparseTop2MLP(nn.Module):
         current_hidden_states = self.w2(current_hidden_states)
         return current_hidden_states
 
-class mark_sharding_ebcm_func(torch.autograd.Function):
+class mark_sharding_bsec_func(torch.autograd.Function):
     @staticmethod
     def forward(ctx, torch_tensor: torch.Tensor) -> torch.Tensor:
         mesh = xs.get_global_mesh()
-        xs.mark_sharding(torch_tensor, mesh, ('expert', 'fsdp', None, None))
+        xs.mark_sharding(torch_tensor, mesh, (('fsdp', 'expert'), None, None, None))
         return torch_tensor
     
     @staticmethod
     def backward(ctx, torch_tensor: torch.Tensor) -> torch.Tensor:
         print("running_backward", flush=True)
         mesh = xs.get_global_mesh()
-        xs.mark_sharding(torch_tensor, mesh, ('expert', 'fsdp', None, None))
+        xs.mark_sharding(torch_tensor, mesh, (('fsdp', 'expert'), None, None, None))
         return torch_tensor
 
-class mark_sharding_bmec_func(torch.autograd.Function):
+class mark_sharding_bech_func(torch.autograd.Function):
     @staticmethod
     def forward(ctx, torch_tensor: torch.Tensor) -> torch.Tensor:
         mesh = xs.get_global_mesh()
-        xs.mark_sharding(torch_tensor, mesh, ('expert', 'fsdp', None, None))
+        xs.mark_sharding(torch_tensor, mesh, ('fsdp', 'expert', None, None))
         return torch_tensor
     
     @staticmethod
     def backward(ctx, torch_tensor: torch.Tensor) -> torch.Tensor:
         print("running_backward", flush=True)
         mesh = xs.get_global_mesh()
-        xs.mark_sharding(torch_tensor, mesh, ('expert', 'fsdp', None, None))
+        xs.mark_sharding(torch_tensor, mesh, ('fsdp', 'expert', None, None))
         return torch_tensor
 
 class MixtralExpertParallelTop2MLP(nn.Module):
@@ -890,14 +890,14 @@ class MixtralExpertParallelTop2MLP(nn.Module):
         xs.mark_sharding(full_w2, mesh, ('expert', 'tensor', None))
         xs.mark_sharding(full_w3, mesh, ('expert', None, 'tensor'))
 
-        layer_w1 = torch.einsum("bmec,emh->ebch", dispatch_input, full_w1)
+        layer_w1 = torch.einsum("becm,emh->bech", dispatch_input, full_w1)
         if NUM_TPU_SLICE == 1:
             # xs.mark_sharding(layer_w1, mesh, ('expert', 'fsdp', None, None))
             self.mark_sharding_fn(layer_w1)
         else:
             xs.mark_sharding(layer_w1, mesh, (None, ('dcn', 'fsdp'), None, None))
 
-        layer_w3 = torch.einsum("bmec,emh->ebch", dispatch_input, full_w3)
+        layer_w3 = torch.einsum("becm,emh->bech", dispatch_input, full_w3)
         if NUM_TPU_SLICE == 1:
             # xs.mark_sharding(layer_w3, mesh, ('expert', 'fsdp', None, None))
             self.mark_sharding_fn(layer_w3)
@@ -908,7 +908,7 @@ class MixtralExpertParallelTop2MLP(nn.Module):
 
         self.mark_sharding_fn(layer_multiply)
 
-        intermediate_layer = torch.einsum("ebch,ehm->ebcm", layer_multiply, full_w2)
+        intermediate_layer = torch.einsum("bech,ehm->becm", layer_multiply, full_w2)
         if NUM_TPU_SLICE == 1:
             # xs.mark_sharding(intermediate_layer, mesh, ('expert', 'fsdp', None, None))
             self.mark_sharding_fn(intermediate_layer)
@@ -1219,6 +1219,7 @@ class MixtralSparseMoeBlock(nn.Module):
 
         # Jitter parameters
         self.jitter_noise = config.router_jitter_noise
+        self.bsec_mark_sharding = mark_sharding_bsec_func.apply
         
 
     @xp.trace_me("generate_masks")
@@ -1306,29 +1307,31 @@ class MixtralSparseMoeBlock(nn.Module):
                     mask_axes = (('fsdp', 'expert'), None, None, None)
                 else: 
                     mask_axes = (('dcn', 'fsdp'), None, None, None)
-                xs.mark_sharding(dispatch_mask, mesh, mask_axes)
-                xs.mark_sharding(combine_mask, mesh, mask_axes)
+                self.bsec_mark_sharding(dispatch_mask)
+                self.bsec_mark_sharding(combine_mask)
+                # xs.mark_sharding(dispatch_mask, mesh, mask_axes)
+                # xs.mark_sharding(combine_mask, mesh, mask_axes)
                 loss = self.alternate_load_balance_loss(selected_experts, expert_weights)
 
                 if NUM_TPU_SLICE == 1:
                     xs.mark_sharding(hidden_states, mesh, (('fsdp', 'expert'), None, None))
                 else:
                     xs.mark_sharding(hidden_states, mesh, (('dcn', 'fsdp'), None, None))
-                with xp.Trace("bsm,bsec->bmec"):
-                    dispatch = torch.einsum("bsm,bsec->bmec", hidden_states, dispatch_mask)
+                with xp.Trace("bsm,bsec->becm"):
+                    dispatch = torch.einsum("bsm,bsec->becm", hidden_states, dispatch_mask)
                 if NUM_TPU_SLICE == 1:
-                    xs.mark_sharding(dispatch, mesh, ('fsdp', None, 'expert', None))
+                    xs.mark_sharding(dispatch, mesh, ('fsdp', 'expert', None, None))
                 else:
                     xs.mark_sharding(dispatch, mesh, (None, ('dcn', 'fsdp'), None, None))
 
                 expert_layer = self.experts(dispatch)
 
-                with xp.Trace("ebcm,bsec -> bsm"):
-                    output = torch.einsum("ebcm,bsec -> bsm", expert_layer, combine_mask)
-                if NUM_TPU_SLICE == 1:
-                    xs.mark_sharding(output, mesh, (('fsdp', 'expert'), None, None))
-                else:
-                    xs.mark_sharding(output, mesh, (('dcn', 'fsdp'), None, None))
+                with xp.Trace("becm,bsec -> bsm"):
+                    output = torch.einsum("bmec,bsec -> bsm", expert_layer, combine_mask)
+                # if NUM_TPU_SLICE == 1:
+                #     xs.mark_sharding(output, mesh, (('fsdp', 'expert'), None, None))
+                # else:
+                #     xs.mark_sharding(output, mesh, (('dcn', 'fsdp'), None, None))
                 return output, router_logits, loss
 
             final_hidden_states = torch.zeros(
