@@ -167,6 +167,15 @@ class ModelArguments:
             )
         },
     )
+
+    log_loss: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                "Log the loss during training"
+            )
+        },
+    )
     spmd_2d_sharding: int = field(
         default=0,
         metadata={
@@ -452,6 +461,7 @@ def main():
 
     # Pass the flash attention toggle to the model config
     config.flash_attention = model_args.flash_attention
+    config.log_loss = model_args.log_loss
 
     if model_args.model_name_or_path:
         torch_dtype = (

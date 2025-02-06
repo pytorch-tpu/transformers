@@ -2107,7 +2107,7 @@ class Trainer:
         epochs_trained = 0
         steps_trained_in_current_epoch = 0
         steps_trained_progress_bar = None
-
+        loss_tracker = []
         # Check if continuing training from a checkpoint
         if resume_from_checkpoint is not None and os.path.isfile(
             os.path.join(resume_from_checkpoint, TRAINER_STATE_NAME)
@@ -2339,6 +2339,10 @@ class Trainer:
                     import tempfile
                     xp.trace_detached('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
 
+                if config.log_loss:
+                    loss_tracker.append([step, tr_loss_step.item()])
+
+
                 if self.control.should_epoch_stop or self.control.should_training_stop:
                     # PyTorch/XLA relies on the data loader to insert the mark_step for
                     # each step. Since we are breaking the loop early, we need to manually
@@ -2346,6 +2350,7 @@ class Trainer:
                     if is_torch_xla_available():
                         xm.mark_step()
                     break
+            
             if step < 0:
                 logger.warning(
                     "There seems to be not a single sample in your epoch_iterator, stopping training at step"
@@ -2374,6 +2379,8 @@ class Trainer:
             delattr(self, "_past")
 
         logger.info("\n\nTraining completed. Do not forget to share your model on huggingface.co/models =)\n\n")
+        print('-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=')
+        print(loss_tracker)
         if args.load_best_model_at_end and self.state.best_model_checkpoint is not None:
             # Wait for everyone to get here so we are sure the model has been saved by process 0.
             if is_torch_xla_available():
