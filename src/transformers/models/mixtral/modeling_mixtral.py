@@ -1327,11 +1327,11 @@ class MixtralSparseMoeBlock(nn.Module):
                 expert_layer = self.experts(dispatch)
 
                 with xp.Trace("becm,bsec -> bsm"):
-                    output = torch.einsum("bmec,bsec -> bsm", expert_layer, combine_mask)
-                # if NUM_TPU_SLICE == 1:
-                #     xs.mark_sharding(output, mesh, (('fsdp', 'expert'), None, None))
-                # else:
-                #     xs.mark_sharding(output, mesh, (('dcn', 'fsdp'), None, None))
+                    output = torch.einsum("becm,bsec -> bsm", expert_layer, combine_mask)
+                if NUM_TPU_SLICE == 1:
+                    xs.mark_sharding(output, mesh, (('fsdp', 'expert'), None, None))
+                else:
+                    xs.mark_sharding(output, mesh, (('dcn', 'fsdp'), None, None))
                 return output, router_logits, loss
 
             final_hidden_states = torch.zeros(
