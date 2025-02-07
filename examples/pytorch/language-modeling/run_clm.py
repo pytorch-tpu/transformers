@@ -65,7 +65,6 @@ require_version("datasets>=2.14.0", "To fix: pip install -r examples/pytorch/lan
 
 logger = logging.getLogger(__name__)
 
-
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
@@ -554,7 +553,8 @@ def main():
             )
         return output
 
-    with training_args.main_process_first(desc="dataset map tokenization"):
+    # with training_args.main_process_first(desc="dataset map tokenization"):
+    if True:
         if not data_args.streaming:
             tokenized_datasets = raw_datasets.map(
                 tokenize_function,
@@ -618,7 +618,8 @@ def main():
     # To speed up this part, we use multiprocessing. See the documentation of the map method for more information:
     # https://huggingface.co/docs/datasets/process#map
 
-    with training_args.main_process_first(desc="grouping texts together"):
+    # with training_args.main_process_first(desc="grouping texts together"):
+    if True:
         if not data_args.streaming:
             lm_datasets = tokenized_datasets.map(
                 group_texts,
@@ -724,11 +725,7 @@ def main():
         # Data collator will default to DataCollatorWithPadding, so we change it.
         data_collator=default_data_collator,
         compute_metrics=compute_metrics if training_args.do_eval and not is_torch_xla_available() else None,
-        preprocess_logits_for_metrics=preprocess_logits_for_metrics
-        if training_args.do_eval and not is_torch_xla_available()
-        else None,
     )
-
     # Training
     if training_args.do_train:
         checkpoint = None
@@ -736,7 +733,8 @@ def main():
             checkpoint = training_args.resume_from_checkpoint
         elif last_checkpoint is not None:
             checkpoint = last_checkpoint
-        train_result = trainer.train(resume_from_checkpoint=checkpoint)
+        # import pdb; pdb.set_trace()
+        train_result = trainer.train()
         trainer.save_model()  # Saves the tokenizer too for easy upload
 
         metrics = train_result.metrics

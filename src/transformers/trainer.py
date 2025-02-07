@@ -238,6 +238,7 @@ if is_accelerate_available():
 if is_accelerate_available("0.28.0"):
     from accelerate.utils import DataLoaderConfiguration
 
+NUM_TPU_SLICE = int(os.environ.get('NUM_TPU_SLICE', 1))
 
 def _is_peft_model(model):
     if is_peft_available():
@@ -681,7 +682,20 @@ class Trainer:
             # Prepare the SPMD mesh that is going to be used by the data loader and the FSDPv2 wrapper.
             # Tensor axis is just a placeholder where it will not be used in FSDPv2.
             num_devices = xr.global_runtime_device_count()
-            xs.set_global_mesh(xs.Mesh(np.array(range(num_devices)), (num_devices, 1), axis_names=("fsdp", "tensor")))
+            if NUM_TPU_SLICE == 1:
+                mesh_shape = (num_devices, 1)
+                device_ids = np.array(range(num_devices))
+                # To be noted, the mesh must have an axis named 'fsdp', which the weights and activations will be sharded on.
+                mesh = xs.Mesh(device_ids, mesh_shape, ('fsdp', 'tensor'))
+                xs.set_global_mesh(mesh)
+            elif NUM_TPU_SLICE > 1:
+                dcn_axis = NUM_TPU_SLICE
+                ici_mesh_shape = (1, num_devices // dcn_axis, 1)
+                dcn_mesh_shape = (dcn_axis, 1, 1)
+                mesh = xs.HybridMesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape, axis_names=('dcn', 'fsdp', 'tensor'))
+                xs.set_global_mesh(mesh)
+            else:
+                raise ValueError("Expected NUM_TPU_SLICE > 0")
 
     def _activate_neftune(self, model):
         r"""
@@ -1712,7 +1726,11 @@ class Trainer:
 
                     if real_output is None:
                         raise ValueError("Something went wrong, the output of the model shouldn't be `None`")
-                    xs.mark_sharding(real_output, mesh, ("fsdp", None, None))
+                    if NUM_TPU_SLICE == 1:
+                        xs.mark_sharding(real_output, mesh, ("fsdp", None, None))
+                    else:
+                        xs.mark_sharding(real_output, mesh, (("dcn", "fsdp"), None, None))
+
 
                 self.model = model = FSDPv2(
                     model,
@@ -1796,6 +1814,7 @@ class Trainer:
         args = self.args
 
         self.is_in_train = True
+        os.environ['USE_SINGLE_SLICE']= 'true'
 
         # Attach NEFTune hooks if necessary
         if self.neftune_noise_alpha is not None:
@@ -1896,7 +1915,12 @@ class Trainer:
         # Data loader and number of training steps
         train_dataloader = self.get_train_dataloader()
         if self.is_fsdp_xla_v2_enabled:
-            train_dataloader = tpu_spmd_dataloader(train_dataloader)
+            # train_dataloader = tpu_spmd_dataloader(train_dataloader)
+            if NUM_TPU_SLICE == 1:
+                sharding_spec = xs.ShardingSpec(xs.get_global_mesh(), ("fsdp", None))
+            else:
+                sharding_spec = xs.ShardingSpec(xs.get_global_mesh(), (("dcn", "fsdp"), None))
+            train_dataloader._parallel_loader_kwargs["input_sharding"] = sharding_spec
 
         # Setting up training control variables:
         # number of training epochs: num_train_epochs
@@ -2223,6 +2247,9 @@ class Trainer:
                     # Let's fix the stupid accelerate later...
                     # with self.accelerator.accumulate(model):
                     tr_loss_step = self.training_step(model, inputs)
+
+                    if step % 10 == 0:
+                        print(f"Training step {step} : Loss: {tr_loss_step}")
 
                     if (
                         args.logging_nan_inf_filter
