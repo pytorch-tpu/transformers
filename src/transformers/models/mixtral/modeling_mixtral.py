@@ -80,7 +80,7 @@ logger = logging.get_logger(__name__)
 
 _CONFIG_FOR_DOC = "MixtralConfig"
 NUM_TPU_SLICE = int(os.environ.get('NUM_TPU_SLICE', 1))
-
+USE_EXPERT_PARALLELISM = (os.environ.get('USE_EXPERT_PARALLELISM', "0") == "1")
 
 def load_balancing_loss_func(
     gate_logits: torch.Tensor, num_experts: torch.Tensor = None, top_k=2, attention_mask: Optional[torch.Tensor] = None
@@ -416,7 +416,10 @@ class MixtralAttention(nn.Module):
 
         attn_output = self.o_proj(attn_output)
         mesh = xs.get_global_mesh()
-        xs.mark_sharding(attn_output, mesh, (('fsdp', 'expert'), None, 'tensor'))
+        if USE_EXPERT_PARALLELISM:
+            xs.mark_sharding(attn_output, mesh, (('fsdp', 'expert'), None, 'tensor'))
+        else:
+            xs.mark_sharding(attn_output, mesh, ('fsdp', None, 'tensor'))
         if not output_attentions:
             attn_weights = None
 
