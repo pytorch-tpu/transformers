@@ -1910,46 +1910,32 @@ class Trainer:
         # number of training epochs: num_train_epochs
         # number of training steps per epoch: num_update_steps_per_epoch
         # total number of training steps to execute: max_steps
-        total_train_batch_size = self._train_batch_size * args.gradient_accumulation_steps * args.world_size
-
-        len_dataloader = None
-        num_train_tokens = None
-        if has_length(train_dataloader):
-            len_dataloader = len(train_dataloader)
-            num_update_steps_per_epoch = len_dataloader // args.gradient_accumulation_steps
-            num_update_steps_per_epoch = max(num_update_steps_per_epoch, 1)
-            num_examples = self.num_examples(train_dataloader)
-            if args.max_steps > 0:
-                max_steps = args.max_steps
-                num_train_epochs = args.max_steps // num_update_steps_per_epoch + int(
-                    args.max_steps % num_update_steps_per_epoch > 0
-                )
-                # May be slightly incorrect if the last batch in the training dataloader has a smaller size but it's
-                # the best we can do.
-                num_train_samples = args.max_steps * total_train_batch_size
-                if args.include_tokens_per_second:
-                    num_train_tokens = (
-                        self.num_tokens(train_dataloader, args.max_steps) * args.gradient_accumulation_steps
-                    )
-            else:
-                max_steps = math.ceil(args.num_train_epochs * num_update_steps_per_epoch)
-                num_train_epochs = math.ceil(args.num_train_epochs)
-                num_train_samples = self.num_examples(train_dataloader) * args.num_train_epochs
-                if args.include_tokens_per_second:
-                    num_train_tokens = self.num_tokens(train_dataloader) * args.num_train_epochs
-        elif args.max_steps > 0:  # Rely on max_steps when dataloader does not have a working size
-            max_steps = args.max_steps
-            # Setting a very large number of epochs so we go as many times as necessary over the iterator.
-            num_train_epochs = sys.maxsize
-            num_update_steps_per_epoch = max_steps
-            num_examples = total_train_batch_size * args.max_steps
-            num_train_samples = args.max_steps * total_train_batch_size
-            if args.include_tokens_per_second:
-                num_train_tokens = self.num_tokens(train_dataloader, args.max_steps) * args.gradient_accumulation_steps
-        else:
-            raise ValueError(
-                "args.max_steps must be set to a positive value if dataloader does not have a length, was"
-                f" {args.max_steps}"
+        profile_step = int(os.environ.get('PROFILE_STEP', -1))
+        profile_epoch = int(os.environ.get('PROFILE_EPOCH', -1))
+        profile_duration = int(os.environ.get('PROFILE_DURATION_MS', 20000))
+        profile_logdir = os.environ.get('PROFILE_LOGDIR', None)
+        total_train_batch_size = self._train_batch_size * args.gradient_accumulation_steps
+        assert args.max_steps > 0
+        max_steps = args.max_steps
+        len_dataloader = len(train_dataloader)
+        num_update_steps_per_epoch = len_dataloader // args.gradient_accumulation_steps
+        num_update_steps_per_epoch = max(num_update_steps_per_epoch, 1)
+        steps_for_counting_metrics = max_steps - num_update_steps_per_epoch*profile_epoch - profile_step
+        num_examples = self.num_examples(train_dataloader)
+        num_train_epochs = args.max_steps // num_update_steps_per_epoch + int(
+            args.max_steps % num_update_steps_per_epoch > 0
+        )
+        # May be slightly incorrect if the last batch in the training dataloader has a smaller size but it's
+        # the best we can do.
+        num_train_samples = args.max_steps * total_train_batch_size
+        metrics_num_train_samples = steps_for_counting_metrics * total_train_batch_size
+        metrics_num_train_tokens=None
+        if args.include_tokens_per_second:
+            num_train_tokens = (
+                self.num_tokens(train_dataloader, args.max_steps) * args.gradient_accumulation_steps
+            )
+            metrics_num_train_tokens = (
+                self.num_tokens(train_dataloader, steps_for_counting_metrics) * args.gradient_accumulation_steps
             )
 
         if DebugOption.UNDERFLOW_OVERFLOW in self.args.debug:
@@ -2153,10 +2139,6 @@ class Trainer:
         total_batched_samples = 0
         server = xp.start_server(9012)
         logger.info(f'Profiling server started: {str(server)}')
-        profile_step = int(os.environ.get('PROFILE_STEP', -1))
-        profile_epoch = int(os.environ.get('PROFILE_EPOCH', -1))
-        profile_duration = int(os.environ.get('PROFILE_DURATION_MS', 20000))
-        profile_logdir = os.environ.get('PROFILE_LOGDIR', None)
         for epoch in range(epochs_trained, num_train_epochs):
             epoch_iterator = train_dataloader
             if hasattr(epoch_iterator, "set_epoch"):
@@ -2309,6 +2291,8 @@ class Trainer:
                     xm.wait_device_ops()
                     import tempfile
                     xp.trace_detached('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
+                    # Assuming that the profiles start after model compilation is done.
+                    after_compile_start_time = time.time()
 
                 if self.control.should_epoch_stop or self.control.should_training_stop:
                     # PyTorch/XLA relies on the data loader to insert the mark_step for
@@ -2360,13 +2344,13 @@ class Trainer:
         self._total_loss_scalar += tr_loss.item()
         effective_global_step = max(self.state.global_step, 0.001)  # Avoid ZeroDivisionError
         train_loss = self._total_loss_scalar / effective_global_step
-
+        xm.wait_device_ops()
         metrics = speed_metrics(
             "train",
-            start_time,
-            num_samples=num_train_samples,
-            num_steps=self.state.max_steps,
-            num_tokens=num_train_tokens,
+            after_compile_start_time,
+            num_samples=metrics_num_train_samples,
+            num_steps=steps_for_counting_metrics,
+            num_tokens=metrics_num_train_tokens,
         )
         self.store_flos()
         metrics["total_flos"] = self.state.total_flos
