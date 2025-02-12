@@ -10,7 +10,7 @@ export PROFILE_EPOCH=0
 export PROFILE_STEP=3
 export PROFILE_DURATION_MS=20000
 export PROFILE_LOGDIR=gs://bbahl/mixtral_expert_parallel
-export USE_EXPERT_PARALLELISM=0
+export USE_EXPERT_PARALLELISM=1
 python3 examples/pytorch/language-modeling/run_clm.py \
   --dataset_name wikitext \
   --dataset_config_name wikitext-2-raw-v1 \
@@ -25,8 +25,6 @@ python3 examples/pytorch/language-modeling/run_clm.py \
   --optim adafactor \
   --save_strategy no \
   --logging_strategy no \
-  --fsdp "full_shard" \
-  --fsdp_config fsdp_config.json \
   --torch_dtype bfloat16 \
   --dataloader_drop_last yes \
   --flash_attention \
