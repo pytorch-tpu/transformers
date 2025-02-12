@@ -33,6 +33,9 @@ from typing import Optional
 import datasets
 import evaluate
 import torch
+import torch_xla
+import torch_xla.distributed.spmd as xs
+import torch_xla.runtime as xr
 from datasets import load_dataset
 
 import transformers
@@ -54,9 +57,6 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 
-import torch_xla
-import torch_xla.distributed.spmd as xs
-import torch_xla.runtime as xr
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.40.0.dev0")
@@ -516,7 +516,7 @@ def main():
             )
         return output
 
-    
+
     if not data_args.streaming:
         tokenized_datasets = raw_datasets.map(
             tokenize_function,

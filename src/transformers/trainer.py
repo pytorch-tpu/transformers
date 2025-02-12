@@ -49,6 +49,7 @@ import huggingface_hub.utils as hf_hub_utils
 import numpy as np
 import torch
 import torch.distributed as dist
+import torch_xla.distributed.parallel_loader as pl
 from huggingface_hub import ModelCard, create_repo, upload_folder
 from packaging import version
 from torch import nn
@@ -127,7 +128,6 @@ from .trainer_utils import (
     set_seed,
     speed_metrics,
 )
-import torch_xla.distributed.parallel_loader as pl
 from .training_args import OptimizerNames, ParallelMode, TrainingArguments
 from .utils import (
     ADAPTER_CONFIG_NAME,
@@ -181,8 +181,8 @@ if is_datasets_available():
 
 if is_torch_xla_available():
     import torch_xla.core.xla_model as xm
-    import torch_xla.debug.profiler as xp
     import torch_xla.debug.metrics as met
+    import torch_xla.debug.profiler as xp
     from torch_xla import __version__ as XLA_VERSION
 
     IS_XLA_FSDPV2_POST_2_2 = version.parse(XLA_VERSION) >= version.parse(XLA_FSDPV2_MIN_VERSION)
@@ -377,6 +377,8 @@ class Trainer:
         optimizers: Tuple[torch.optim.Optimizer, torch.optim.lr_scheduler.LambdaLR] = (None, None),
         preprocess_logits_for_metrics: Optional[Callable[[torch.Tensor, torch.Tensor], torch.Tensor]] = None,
     ):
+        if model_init is None:
+            logger.warning("PIZ: this model_init is None")
         if args is None:
             output_dir = "tmp_trainer"
             logger.info(f"No `TrainingArguments` passed, using `output_dir={output_dir}`.")
@@ -404,12 +406,14 @@ class Trainer:
 
         if model is None:
             if model_init is not None:
+                logger.warning("PIZ: model_init is not None")
                 self.model_init = model_init
                 model = self.call_model_init()
             else:
                 raise RuntimeError("`Trainer` requires either a `model` or `model_init` argument")
         else:
             if model_init is not None:
+                logger.warning("PIZ: model and model_init are not None")
                 warnings.warn(
                     "`Trainer` requires either a `model` or `model_init` argument, but not both. `model_init` will"
                     " overwrite your model when calling the `train` method. This will become a fatal error in the next"
@@ -894,21 +898,41 @@ class Trainer:
 
 
         if is_torch_xla_available():
-            torch_dataloader = DataLoader(train_dataset, **dataloader_params)
+            num_replicas = xr.process_count()
+            sampler = torch.utils.data.DistributedSampler(
+                self.train_dataset,
+                num_replicas=num_replicas,
+                rank=xr.process_index(),
+            )
+            # torch_dataloader = DataLoader(train_dataset, **dataloader_params)
+            logger.info(f"PIZ: self._train_batch_size (global_batch_size): {self._train_batch_size}")
             device = xm.xla_device()
-            if NUM_SLICE==1:
-                mp_device_loader = pl.MpDeviceLoader(
-                    torch_dataloader,
-                    device,
-                    input_sharding=xs.ShardingSpec(xs.get_global_mesh(), ("fsdp", None)),
-                )
-            else:
-                mp_device_loader = pl.MpDeviceLoader(
-                    torch_dataloader,
-                    device,
-                    input_sharding=xs.ShardingSpec(xs.get_global_mesh(), (("dcn", "fsdp"), None)),
-                )
+            torch_dataloader = DataLoader(
+                train_dataset,
+                # Data collator will default to DataCollatorWithPadding, so we change it.
+                collate_fn=default_data_collator,
+                # This is the host batch size.
+                batch_size=self._train_batch_size // num_replicas,
+                sampler=sampler,
+                drop_last=True,
+            )
+            mp_device_loader = pl.MpDeviceLoader(
+                torch_dataloader, device, input_sharding=xs.ShardingSpec(xs.get_global_mesh(), (("fsdp"), None), minibatch=True),
+            )
             return mp_device_loader
+            # if NUM_SLICE==1:
+            #     mp_device_loader = pl.MpDeviceLoader(
+            #         torch_dataloader,
+            #         device,
+            #         input_sharding=xs.ShardingSpec(xs.get_global_mesh(), ("fsdp", None), minibatch=True),
+            #     )
+            # else:
+            #     mp_device_loader = pl.MpDeviceLoader(
+            #         torch_dataloader,
+            #         device,
+            #         input_sharding=xs.ShardingSpec(xs.get_global_mesh(), (("dcn", "fsdp"), None), minibatch=True),
+            #     )
+            # return mp_device_loader
 
         return self.accelerator.prepare(DataLoader(train_dataset, **dataloader_params))
 
@@ -2163,6 +2187,7 @@ class Trainer:
 
         # Skip the first epochs_trained epochs to get the random state of the dataloader at the right point.
         if not args.ignore_data_skip:
+            logger.info("PIZ: ignore data skip")
             for epoch in range(epochs_trained):
                 sampler = get_dataloader_sampler(train_dataloader)
                 sampler_kinds = [RandomSampler]
@@ -2178,7 +2203,6 @@ class Trainer:
                     # AT THE VERY END!
                     sampler = sampler if sampler is not None else []
                     _ = list(sampler)
-
         total_batched_samples = 0
         server = xp.start_server(9012)
         logger.info(f'Profiling server started: {str(server)}')
@@ -2186,6 +2210,8 @@ class Trainer:
         profile_epoch = int(os.environ.get('PROFILE_EPOCH', -1))
         profile_duration = int(os.environ.get('PROFILE_DURATION_MS', 20000))
         profile_logdir = os.environ.get('PROFILE_LOGDIR', None)
+
+        global_step = 0
         for epoch in range(epochs_trained, num_train_epochs):
             epoch_iterator = train_dataloader
             if hasattr(epoch_iterator, "set_epoch"):
@@ -2208,7 +2234,7 @@ class Trainer:
             rng_to_sync = False
             steps_skipped = 0
             if steps_trained_in_current_epoch > 0:
-                epoch_iterator = skip_first_batches(epoch_iterator, steps_trained_in_current_epoch)
+                epoch_iterator = skip_first_batches(epoch_iterator, steps_trained_in_current_epoch) # PIZ: accelerate package which is not used
                 steps_skipped = steps_trained_in_current_epoch
                 steps_trained_in_current_epoch = 0
                 rng_to_sync = True
@@ -2253,7 +2279,6 @@ class Trainer:
 
                 with self.accelerator.accumulate(model):
                     tr_loss_step = self.training_step(model, inputs)
-
                 if (
                     args.logging_nan_inf_filter
                     and not is_torch_xla_available()
@@ -2267,7 +2292,7 @@ class Trainer:
                             f"Calculated loss must be on the original device: {tr_loss.device} but device in use is {tr_loss_step.device}"
                         )
                     tr_loss += tr_loss_step
-
+                logger.info(f"Running Epoch: {epoch}, Step {global_step}, tr_loss_step: {tr_loss_step}")
                 self.current_flos += float(self.floating_point_ops(inputs))
 
                 is_last_step_and_steps_less_than_grad_acc = (
@@ -2339,9 +2364,11 @@ class Trainer:
                     import tempfile
                     xp.trace_detached('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
 
-                if config.log_loss:
-                    loss_tracker.append([step, tr_loss_step.item()])
-
+                # if config.log_loss:
+                if True:
+                    loss_tracker.append([epoch, global_step, tr_loss_step.item()])
+                
+                global_step += 1
 
                 if self.control.should_epoch_stop or self.control.should_training_stop:
                     # PyTorch/XLA relies on the data loader to insert the mark_step for
@@ -2350,7 +2377,7 @@ class Trainer:
                     if is_torch_xla_available():
                         xm.mark_step()
                     break
-            
+
             if step < 0:
                 logger.warning(
                     "There seems to be not a single sample in your epoch_iterator, stopping training at step"
@@ -2380,7 +2407,8 @@ class Trainer:
 
         logger.info("\n\nTraining completed. Do not forget to share your model on huggingface.co/models =)\n\n")
         print('-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=')
-        print(loss_tracker)
+        logger.info(f"{loss_tracker}")
+        # print(loss_tracker)
         if args.load_best_model_at_end and self.state.best_model_checkpoint is not None:
             # Wait for everyone to get here so we are sure the model has been saved by process 0.
             if is_torch_xla_available():
