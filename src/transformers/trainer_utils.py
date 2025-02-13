@@ -372,21 +372,17 @@ def total_processes_number(local_rank):
     return 1
 
 
-def speed_metrics(split, start_time, num_samples=None, num_steps=None, num_tokens=None):
+def speed_metrics(split, runtime, num_samples=None, num_steps=None, num_tokens=None):
     """
     Measure and return speed performance metrics.
 
-    This function requires a time snapshot `start_time` before the operation to be measured starts and this function
-    should be run immediately after the operation to be measured has completed.
-
     Args:
     - split: name to prefix metric (like train, eval, test...)
-    - start_time: operation start time
+    - runtime: operation runtime
     - num_samples: number of samples processed
     - num_steps: number of steps processed
     - num_tokens: number of tokens processed
     """
-    runtime = time.time() - start_time
     result = {f"{split}_runtime": round(runtime, 4)}
     if runtime == 0:
         return result

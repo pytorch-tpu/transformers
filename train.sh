@@ -9,7 +9,7 @@ export XLA_HLO_DEBUG=1
 export PROFILE_EPOCH=0
 export PROFILE_STEP=3
 export PROFILE_DURATION_MS=20000
-export PROFILE_LOGDIR=gs://bbahl/llama_debug
+export PROFILE_LOGDIR=/tmp/llama_debug/
 python3 examples/pytorch/language-modeling/run_clm.py \
   --dataset_name wikitext \
   --dataset_config_name wikitext-2-raw-v1 \

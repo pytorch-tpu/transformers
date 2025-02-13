@@ -127,6 +127,7 @@ from .trainer_utils import (
     set_seed,
     speed_metrics,
 )
+from .profile_utils import analyze_step_duration
 from .training_args import OptimizerNames, ParallelMode, TrainingArguments
 from .utils import (
     ADAPTER_CONFIG_NAME,
@@ -1927,10 +1928,9 @@ class Trainer:
         steps_for_counting_metrics = max_steps
         compile_steps = 0
         non_compile_step_time = 0
-        # May be slightly incorrect if the last batch in the training dataloader has a smaller size but it's
-        # the best we can do.
+        compile_step_time = 0
         num_train_samples = args.max_steps * total_train_batch_size
-        metrics_num_train_samples = steps_for_counting_metrics * total_train_batch_size
+        
         metrics_num_train_tokens=None
         if args.include_tokens_per_second:
             num_train_tokens = (
@@ -2173,12 +2173,12 @@ class Trainer:
             for step, inputs in enumerate(epoch_iterator):
                 total_batched_samples += 1
                 step_time = time.time() - last_step_start_time
-                import pdb; pdb.set_trace()
                 # For short report that only contains a few key metrics.
-                if met.counter_value('UncachedCompile') >= 1:
+                if met.counter_value('UncachedCompile'):
                     steps_for_counting_metrics -= 1
                     compile_steps += 1
-                    print(f"Compilation at Step {step-1}")
+                    compile_step_time += step_time
+                    print(f"Compilation at Step {step-1}, time: {step_time}")
                 met.clear_all()
                 last_step_start_time = time.time()
 
@@ -2304,7 +2304,6 @@ class Trainer:
                     import tempfile
                     xp.trace_detached('127.0.0.1:9012', profile_logdir or tempfile.mkdtemp(), profile_duration or 20000)
                     # Assuming that the profiles start after model compilation is done.
-                    after_compile_start_time = time.time()
 
                 if self.control.should_epoch_stop or self.control.should_training_stop:
                     # PyTorch/XLA relies on the data loader to insert the mark_step for
@@ -2312,6 +2311,14 @@ class Trainer:
                     # insert the mark_step here.
                     if is_torch_xla_available():
                         xm.mark_step()
+                    step_time = time.time() - last_step_start_time
+                    # For short report that only contains a few key metrics.
+                    if met.counter_value('UncachedCompile'):
+                        steps_for_counting_metrics -= 1
+                        compile_steps += 1
+                        compile_step_time += step_time
+                        print(f"Compilation at Step {step-1}, time {step_time}")
+                    met.clear_all()
                     break
             if step < 0:
                 logger.warning(
@@ -2357,11 +2364,22 @@ class Trainer:
         effective_global_step = max(self.state.global_step, 0.001)  # Avoid ZeroDivisionError
         train_loss = self._total_loss_scalar / effective_global_step
         xm.wait_device_ops()
+        
+        files = glob.glob(os.path.join(profile_logdir, "**/*.xplane.pb"), recursive=True)
+        files.sort()
+        import pdb; pdb.set_trace()
+        step_runtime_from_profile, steps_from_profile = analyze_step_duration(files[-1])
+        metrics_num_train_samples = steps_from_profile * total_train_batch_size
+        metrics_num_train_tokens=None
+        if args.include_tokens_per_second:
+            metrics_num_train_tokens = (
+                self.num_tokens(train_dataloader, steps_from_profile) * args.gradient_accumulation_steps
+            )
         metrics = speed_metrics(
             "train",
-            after_compile_start_time,
+            step_runtime_from_profile * steps_from_profile,
             num_samples=metrics_num_train_samples,
-            num_steps=steps_for_counting_metrics,
+            num_steps=steps_from_profile,
             num_tokens=metrics_num_train_tokens,
         )
         self.store_flos()
