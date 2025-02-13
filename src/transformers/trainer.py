@@ -2178,7 +2178,7 @@ class Trainer:
                     steps_for_counting_metrics -= 1
                     compile_steps += 1
                     compile_step_time += step_time
-                    print(f"Compilation at Step {step-1}, time: {step_time}")
+                    print(f"Compilation at Step {step-1}, time: {step_time}", flush=True)
                 met.clear_all()
                 last_step_start_time = time.time()
 
@@ -2317,7 +2317,7 @@ class Trainer:
                         steps_for_counting_metrics -= 1
                         compile_steps += 1
                         compile_step_time += step_time
-                        print(f"Compilation at Step {step-1}, time {step_time}")
+                        print(f"Compilation at Step {step-1}, time {step_time}", flush=True)
                     met.clear_all()
                     break
             if step < 0:
@@ -2367,7 +2367,6 @@ class Trainer:
         
         files = glob.glob(os.path.join(profile_logdir, "**/*.xplane.pb"), recursive=True)
         files.sort()
-        import pdb; pdb.set_trace()
         step_runtime_from_profile, steps_from_profile = analyze_step_duration(files[-1])
         metrics_num_train_samples = steps_from_profile * total_train_batch_size
         metrics_num_train_tokens=None
