@@ -1920,11 +1920,13 @@ class Trainer:
         len_dataloader = len(train_dataloader)
         num_update_steps_per_epoch = len_dataloader // args.gradient_accumulation_steps
         num_update_steps_per_epoch = max(num_update_steps_per_epoch, 1)
-        steps_for_counting_metrics = max_steps - num_update_steps_per_epoch*profile_epoch - profile_step
         num_examples = self.num_examples(train_dataloader)
         num_train_epochs = args.max_steps // num_update_steps_per_epoch + int(
             args.max_steps % num_update_steps_per_epoch > 0
         )
+        steps_for_counting_metrics = max_steps
+        compile_steps = 0
+        non_compile_step_time = 0
         # May be slightly incorrect if the last batch in the training dataloader has a smaller size but it's
         # the best we can do.
         num_train_samples = args.max_steps * total_train_batch_size
@@ -2167,8 +2169,18 @@ class Trainer:
                 rng_to_sync = True
 
             step = -1
+            last_step_start_time = time.time()
             for step, inputs in enumerate(epoch_iterator):
                 total_batched_samples += 1
+                step_time = time.time() - last_step_start_time
+                import pdb; pdb.set_trace()
+                # For short report that only contains a few key metrics.
+                if met.counter_value('UncachedCompile') >= 1:
+                    steps_for_counting_metrics -= 1
+                    compile_steps += 1
+                    print(f"Compilation at Step {step-1}")
+                met.clear_all()
+                last_step_start_time = time.time()
 
                 if self.args.include_num_input_tokens_seen:
                     main_input_name = getattr(self.model, "main_input_name", "input_ids")
