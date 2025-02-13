@@ -1,4 +1,4 @@
-FROM us-central1-docker.pkg.dev/tpu-pytorch-releases/docker/xla:nightly_3.10_tpuvm_cxx11_20250113
+FROM us-central1-docker.pkg.dev/tpu-pytorch-releases/docker/xla:nightly_3.10_tpuvm_cxx11_20250211
 
 # Set the working directory
 WORKDIR /workspace
@@ -13,14 +13,9 @@ WORKDIR /workspace/transformers
 
 # Install required Python packages for the example
 RUN pip3 install .
-RUN pip3 install accelerate datasets evaluate scikit-learn huggingface-hub
-
-
+RUN pip3 install accelerate datasets evaluate scikit-learn huggingface-hub protobuf
 
 WORKDIR /workspace/
 
-
-
 # Set the default command (optional, for example, to run Python)
 CMD ["/bin/bash"]
-
