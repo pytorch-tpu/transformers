@@ -162,6 +162,7 @@ from .utils import (
     strtobool,
 )
 from .utils.quantization_config import QuantizationMethod
+from .profile_utils import analyze_step_duration
 
 
 DEFAULT_CALLBACKS = [DefaultFlowCallback]
@@ -1899,7 +1900,7 @@ class Trainer:
         # number of training epochs: num_train_epochs
         # number of training steps per epoch: num_update_steps_per_epoch
         # total number of training steps to execute: max_steps
-        total_train_batch_size = self._train_batch_size * args.gradient_accumulation_steps * args.world_size
+        total_train_batch_size = self._train_batch_size * args.gradient_accumulation_steps
 
         len_dataloader = None
         num_train_tokens = None
@@ -2349,13 +2350,22 @@ class Trainer:
         self._total_loss_scalar += tr_loss.item()
         effective_global_step = max(self.state.global_step, 0.001)  # Avoid ZeroDivisionError
         train_loss = self._total_loss_scalar / effective_global_step
-
+        xm.wait_device_ops()
+        files = glob.glob(os.path.join(profile_logdir, "**/*.xplane.pb"), recursive=True)
+        files.sort()
+        step_runtime_from_profile, steps_from_profile = analyze_step_duration(files[-1])
+        metrics_num_train_samples = steps_from_profile * total_train_batch_size
+        metrics_num_train_tokens=None
+        if args.include_tokens_per_second:
+            metrics_num_train_tokens = (
+                self.num_tokens(train_dataloader, steps_from_profile) * args.gradient_accumulation_steps
+            )
         metrics = speed_metrics(
             "train",
-            start_time,
-            num_samples=num_train_samples,
-            num_steps=self.state.max_steps,
-            num_tokens=num_train_tokens,
+            step_runtime_from_profile * steps_from_profile,
+            num_samples=metrics_num_train_samples,
+            num_steps=steps_from_profile,
+            num_tokens=metrics_num_train_tokens,
         )
         self.store_flos()
         metrics["total_flos"] = self.state.total_flos
