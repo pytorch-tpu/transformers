@@ -846,7 +846,7 @@ class MarkShardingFunction(torch.autograd.Function):
     
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
-        print("running_backward", flush=True)
+        print(f"running_backward {grad_output.dtype} {grad_output.shape}", flush=True)
         mesh = xs.get_global_mesh()
         partition_spec = ctx.partition_spec
         zero = torch.zeros((1,), dtype=grad_output.dtype, device=grad_output.device)
@@ -1282,7 +1282,7 @@ class MixtralSparseMoeBlock(nn.Module):
         # router_logits: (batch ,sequence_length, n_experts)
         router_logits = self.gate(hidden_states)
 
-        expert_weights = F.softmax(router_logits, dim=2, dtype=torch.float)
+        expert_weights = F.softmax(router_logits, dim=2, dtype=torch.bfloat16)
         routing_weights, selected_experts = torch.topk(expert_weights, self.top_k, dim=-1)
         routing_weights /= routing_weights.sum(dim=-1, keepdim=True)
         # we cast back to the input dtype
@@ -1316,7 +1316,7 @@ class MixtralSparseMoeBlock(nn.Module):
 
                 expert_layer = self.experts(dispatch)
                 print(f"DEBUG {expert_layer.shape}", flush=True)
-                print(f"DEBUG {combine_mask.shape}", flush=True)
+                print(f"DEBUG {combine_mask.shape} {combine_mask.dtype}", flush=True)
                 print(f"DEBUG {dispatch_mask.shape}", flush=True)
 
                 with xp.Trace("becm,bsec -> bsm"):
