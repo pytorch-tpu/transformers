@@ -474,6 +474,7 @@ def main():
             "You are instantiating a new tokenizer from scratch. This is not supported by this script. "
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
+    torch.set_default_dtype(torch.bfloat16)
 
     # Pass the custom configs to the model config
     config.flash_attention = model_args.flash_attention

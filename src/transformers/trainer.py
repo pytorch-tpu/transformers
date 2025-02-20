@@ -685,9 +685,9 @@ class Trainer:
             num_devices = xr.global_runtime_device_count()
             if NUM_TPU_SLICE == 1:
                 if USE_EXPERT_PARALLELISM:
-                    num_experts = 2
-                    assert num_devices >= num_experts, "num_devices should be greater than num_experts for expert parallelism"
-                    mesh_shape = (num_devices // num_experts, num_experts, 1)
+                    num_experts = 8
+                    # assert num_devices >= num_experts, "num_devices should be greater than num_experts for expert parallelism"
+                    mesh_shape = (num_devices , 1, 1)
                     device_ids = np.array(range(num_devices))
                     mesh = xs.Mesh(device_ids, mesh_shape, ('fsdp', 'expert', 'tensor'))
                     xs.set_global_mesh(mesh)
