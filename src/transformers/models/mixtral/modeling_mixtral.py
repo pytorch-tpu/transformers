@@ -846,7 +846,6 @@ class MarkShardingFunction(torch.autograd.Function):
     
     @staticmethod
     def backward(ctx, grad_output: torch.Tensor) -> torch.Tensor:
-        print(f"running_backward {grad_output.dtype} {grad_output.shape}", flush=True)
         mesh = xs.get_global_mesh()
         partition_spec = ctx.partition_spec
         zero = torch.zeros((1,), dtype=grad_output.dtype, device=grad_output.device)
@@ -883,28 +882,28 @@ class MixtralExpertParallelTop2MLP(nn.Module):
         xs.mark_sharding(full_w2, mesh, ('expert', 'tensor', None))
         xs.mark_sharding(full_w3, mesh, ('expert', None, 'tensor'))
 
-        layer_w1 = torch.einsum("becm,emh->bech", dispatch_input, full_w1)
+        layer_w1 = torch.einsum("ebcm,emh->ebch", dispatch_input, full_w1)
         if NUM_TPU_SLICE == 1:
             # xs.mark_sharding(layer_w1, mesh, ('expert', 'fsdp', None, None))
-            layer_w1 = MarkShardingFunction.apply(layer_w1, ('fsdp', 'expert', None, None))
+            layer_w1 = MarkShardingFunction.apply(layer_w1, ('expert', 'fsdp', None, None))
         else:
             xs.mark_sharding(layer_w1, mesh, (None, ('dcn', 'fsdp'), None, None))
 
-        layer_w3 = torch.einsum("becm,emh->bech", dispatch_input, full_w3)
+        layer_w3 = torch.einsum("ebcm,emh->ebch", dispatch_input, full_w3)
         if NUM_TPU_SLICE == 1:
             # xs.mark_sharding(layer_w3, mesh, ('expert', 'fsdp', None, None))
-            layer_w3 = MarkShardingFunction.apply(layer_w3, ('fsdp', 'expert', None, None))
+            layer_w3 = MarkShardingFunction.apply(layer_w3, ('expert', 'fsdp', None, None))
         else:
             xs.mark_sharding(layer_w3, mesh, (None, ('dcn', 'fsdp'), None, None))
 
         layer_multiply = self.act_fn(layer_w1) * layer_w3
 
-        layer_multiply = MarkShardingFunction.apply(layer_multiply, ('fsdp', 'expert', None, None))
+        layer_multiply = MarkShardingFunction.apply(layer_multiply, ('expert', 'fsdp', None, None))
 
-        intermediate_layer = torch.einsum("bech,ehm->becm", layer_multiply, full_w2)
+        intermediate_layer = torch.einsum("ebch,ehm->ebcm", layer_multiply, full_w2)
         if NUM_TPU_SLICE == 1:
             # xs.mark_sharding(intermediate_layer, mesh, ('expert', 'fsdp', None, None))
-            intermediate_layer = MarkShardingFunction.apply(intermediate_layer, ('fsdp', 'expert', None, None))
+            intermediate_layer = MarkShardingFunction.apply(intermediate_layer, ('expert', 'fsdp', None, None))
         else:
             xs.mark_sharding(intermediate_layer, mesh, (None, ('dcn', 'fsdp'), None, None))
         return intermediate_layer
@@ -1307,20 +1306,17 @@ class MixtralSparseMoeBlock(nn.Module):
                     xs.mark_sharding(hidden_states, mesh, (('fsdp', 'expert'), None, None))
                 else:
                     xs.mark_sharding(hidden_states, mesh, (('dcn', 'fsdp'), None, None))
-                with xp.Trace("bsm,bsec->becm"):
-                    dispatch = torch.einsum("bsm,bsec->becm", hidden_states, dispatch_mask)
+                with xp.Trace("bsm,bsec->ebcm"):
+                    dispatch = torch.einsum("bsm,bsec->ebcm", hidden_states, dispatch_mask)
                 if NUM_TPU_SLICE == 1:
-                    dispatch = MarkShardingFunction.apply(dispatch, ('fsdp', 'expert', None, None))
+                    dispatch = MarkShardingFunction.apply(dispatch, ('expert', 'fsdp', None, None))
                 else:
                     xs.mark_sharding(dispatch, mesh, (None, ('dcn', 'fsdp'), None, None))
 
                 expert_layer = self.experts(dispatch)
-                print(f"DEBUG {expert_layer.shape}", flush=True)
-                print(f"DEBUG {combine_mask.shape} {combine_mask.dtype}", flush=True)
-                print(f"DEBUG {dispatch_mask.shape}", flush=True)
 
-                with xp.Trace("becm,bsec -> bsm"):
-                    output = torch.einsum("becm,bsec -> bsm", expert_layer, combine_mask)
+                with xp.Trace("ebcm,bsec -> bsm"):
+                    output = torch.einsum("ebcm,bsec -> bsm", expert_layer, combine_mask)
                 if NUM_TPU_SLICE == 1:
                     output = MarkShardingFunction.apply(output, (('fsdp', 'expert'), None, None))
                 else:
