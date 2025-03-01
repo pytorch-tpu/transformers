@@ -21,8 +21,6 @@ python3 examples/pytorch/language-modeling/run_clm.py \
   --config_name mixtral_2_experts.json \
   --cache_dir /tmp \
   --tokenizer_name mistralai/Mixtral-8x7B-v0.1 \
-  --fsdp "full_shard" \
-  --fsdp_config fsdp_config.json \
   --block_size 1024 \
   --optim adafactor \
   --save_strategy no \
@@ -33,3 +31,5 @@ python3 examples/pytorch/language-modeling/run_clm.py \
   --num_train_epochs 1 \
   --static \
   --max_steps 15
+  # --fsdp "full_shard" \
+  # --fsdp_config fsdp_config.json \

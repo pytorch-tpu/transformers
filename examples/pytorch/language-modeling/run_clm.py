@@ -68,8 +68,7 @@ logger = logging.getLogger(__name__)
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_CAUSAL_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 USE_EXPERT_PARALLELISM = (os.environ.get('USE_EXPERT_PARALLELISM', "0") == "1")
-print(f"[DEBUG] expert parallelism {USE_EXPERT_PARALLELISM}")
-
+NUM_TPU_SLICE = int(os.environ.get('NUM_TPU_SLICE', 1))
 
 @dataclass
 class ModelArguments:
@@ -723,9 +722,11 @@ def main():
         num_devices = xr.global_runtime_device_count()
         expert_axis = config.expert_parallel_axis
         fsdp_axis = num_devices // expert_axis
-        mesh_shape = (fsdp_axis, expert_axis, 1)
         # Ignore tensor axis for now. It doesn't do anything.
-        spmd_mesh = xs.Mesh(range(num_devices), mesh_shape, ('fsdp', 'expert', 'tensor'))
+        ici_mesh_shape = (1, fsdp_axis, expert_axis, 1)
+        dcn_axis = NUM_TPU_SLICE
+        dcn_mesh_shape = (dcn_axis, 1, 1, 1)
+        spmd_mesh = xs.HybridMesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape, axis_names=('dcn', 'fsdp', 'expert', 'tensor'))
         xs.set_global_mesh(spmd_mesh)
 
         model.to('xla')
