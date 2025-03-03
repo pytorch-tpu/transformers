@@ -722,10 +722,10 @@ def main():
         num_devices = xr.global_runtime_device_count()
         expert_axis = config.expert_parallel_axis
         # Ignore tensor axis for now. It doesn't do anything.
-        ici_mesh_shape = (1, fsdp_axis, expert_axis, 1)
         dcn_axis = NUM_TPU_SLICE
-        dcn_mesh_shape = (dcn_axis, 1, 1, 1)
         fsdp_axis = num_devices // expert_axis // dcn_axis
+        dcn_mesh_shape = (dcn_axis, 1, 1, 1)
+        ici_mesh_shape = (1, fsdp_axis, expert_axis, 1)
         spmd_mesh = xs.HybridMesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape, axis_names=('dcn', 'fsdp', 'expert', 'tensor'))
         xs.set_global_mesh(spmd_mesh)
 
