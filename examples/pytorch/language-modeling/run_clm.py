@@ -764,6 +764,7 @@ def main():
         for i, block in enumerate(model.model.layers):
             model.model.layers[i] = checkpoint_module(block)
 
+    os.environ["SKIP_MEGASCALE_PJRT_CLIENT"] = 1
     # Initialize our Trainer
     trainer = Trainer(
         model=model,

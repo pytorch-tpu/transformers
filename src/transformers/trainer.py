@@ -695,7 +695,7 @@ class Trainer:
                     mesh_shape = (num_devices, 1)
                     device_ids = np.array(range(num_devices))
                     # To be noted, the mesh must have an axis named 'fsdp', which the weights and activations will be sharded on.
-                    mesh = xs.Mesh(device_ids, mesh_shape, ('fsdp', 'tensor'))
+                    mesh = xs.Mesh(device_ids, mesh_shape, ('fsdp', 'expert', 'tensor'))
                     xs.set_global_mesh(mesh)
             elif NUM_TPU_SLICE > 1:
                 dcn_axis = NUM_TPU_SLICE
@@ -1926,9 +1926,9 @@ class Trainer:
         if self.is_fsdp_xla_v2_enabled:
             # train_dataloader = tpu_spmd_dataloader(train_dataloader)
             if NUM_TPU_SLICE == 1:
-                sharding_spec = xs.ShardingSpec(xs.get_global_mesh(), ("fsdp", None))
+                sharding_spec = xs.ShardingSpec(xs.get_global_mesh(), (("fsdp", "expert"), None))
             else:
-                sharding_spec = xs.ShardingSpec(xs.get_global_mesh(), (("dcn", "fsdp"), None))
+                sharding_spec = xs.ShardingSpec(xs.get_global_mesh(), (("dcn", "fsdp", "expert"), None))
             train_dataloader._parallel_loader_kwargs["input_sharding"] = sharding_spec
 
         # Setting up training control variables:
