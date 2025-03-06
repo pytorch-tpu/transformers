@@ -411,7 +411,6 @@ class MixtralAttention(nn.Module):
             query_states /= math.sqrt(self.head_dim)
             partition_spec = None
             mesh = xs.get_global_mesh()
-            print(mesh.__dict__, flush=True)
             if mesh is not None:
                 if NUM_TPU_SLICE == 1:
                     partition_spec = (('fsdp', 'expert'), 'tensor', None, None)

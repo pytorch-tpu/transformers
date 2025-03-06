@@ -684,24 +684,16 @@ class Trainer:
             # Tensor axis is just a placeholder where it will not be used in FSDPv2.
             num_devices = xr.global_runtime_device_count()
             if NUM_TPU_SLICE == 1:
-                if USE_EXPERT_PARALLELISM:
-                    num_experts = 8
-                    # assert num_devices >= num_experts, "num_devices should be greater than num_experts for expert parallelism"
-                    mesh_shape = (num_devices , 1, 1)
-                    device_ids = np.array(range(num_devices))
-                    mesh = xs.Mesh(device_ids, mesh_shape, ('fsdp', 'expert', 'tensor'))
-                    xs.set_global_mesh(mesh)
-                else:
-                    mesh_shape = (num_devices, 1)
-                    device_ids = np.array(range(num_devices))
-                    # To be noted, the mesh must have an axis named 'fsdp', which the weights and activations will be sharded on.
-                    mesh = xs.Mesh(device_ids, mesh_shape, ('fsdp', 'expert', 'tensor'))
-                    xs.set_global_mesh(mesh)
+                mesh_shape = (num_devices, 1, 1)
+                device_ids = np.array(range(num_devices))
+                # To be noted, the mesh must have an axis named 'fsdp', which the weights and activations will be sharded on.
+                mesh = xs.Mesh(device_ids, mesh_shape, ('fsdp', 'expert', 'tensor'))
+                xs.set_global_mesh(mesh)
             elif NUM_TPU_SLICE > 1:
                 dcn_axis = NUM_TPU_SLICE
-                ici_mesh_shape = (1, num_devices // dcn_axis, 1)
-                dcn_mesh_shape = (dcn_axis, 1, 1)
-                mesh = xs.HybridMesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape, axis_names=('dcn', 'fsdp', 'tensor'))
+                ici_mesh_shape = (1, num_devices // dcn_axis, 1, 1)
+                dcn_mesh_shape = (dcn_axis, 1, 1, 1)
+                mesh = xs.HybridMesh(ici_mesh_shape=ici_mesh_shape, dcn_mesh_shape=dcn_mesh_shape, axis_names=('dcn', 'fsdp', 'expert', 'tensor'))
                 xs.set_global_mesh(mesh)
             else:
                 raise ValueError("Expected NUM_TPU_SLICE > 0")
