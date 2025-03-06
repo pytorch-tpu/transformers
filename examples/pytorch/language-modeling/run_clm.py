@@ -765,6 +765,7 @@ def main():
             model.model.layers[i] = checkpoint_module(block)
 
     os.environ["SKIP_MEGASCALE_PJRT_CLIENT"] = 'true'
+    os.environ["USE_SINGLE_SLICE"] = 'true'
     # Initialize our Trainer
     trainer = Trainer(
         model=model,
