@@ -57,7 +57,7 @@ from transformers.utils.versions import require_version
 import torch_xla
 import torch_xla.distributed.spmd as xs
 import torch_xla.runtime as xr
-from torch_xla.distributed.spmd.xla_sharding import apply_xla_patch_to_nn_linear
+#from torch_xla.distributed.spmd.xla_sharding import apply_xla_patch_to_nn_linear
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 check_min_version("4.40.0.dev0")
@@ -765,7 +765,7 @@ def main():
         for i, block in enumerate(model.model.layers):
             model.model.layers[i] = checkpoint_module(block)
     
-    apply_xla_patch_to_nn_linear(model)
+    # apply_xla_patch_to_nn_linear(model)
 
     os.environ["SKIP_MEGASCALE_PJRT_CLIENT"] = 'true'
     os.environ["USE_SINGLE_SLICE"] = 'true'
