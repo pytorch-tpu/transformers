@@ -2365,22 +2365,27 @@ class Trainer:
         train_loss = self._total_loss_scalar / effective_global_step
         xm.wait_device_ops()
         
-        files = glob.glob(os.path.join(profile_logdir, "**/*.xplane.pb"), recursive=True)
-        files.sort()
-        step_runtime_from_profile, steps_from_profile = analyze_step_duration(files[-1])
-        metrics_num_train_samples = steps_from_profile * total_train_batch_size
-        metrics_num_train_tokens=None
-        if args.include_tokens_per_second:
-            metrics_num_train_tokens = (
-                self.num_tokens(train_dataloader, steps_from_profile) * args.gradient_accumulation_steps
+        # If profiling is requested, parse profile. Otherwise, don't include speed
+        # information in metrics.
+        if profile_logdir is not None:
+            files = glob.glob(os.path.join(profile_logdir, "**/*.xplane.pb"), recursive=True)
+            files.sort()
+            step_runtime_from_profile, steps_from_profile = analyze_step_duration(files[-1])
+            metrics_num_train_samples = steps_from_profile * total_train_batch_size
+            metrics_num_train_tokens=None
+            if args.include_tokens_per_second:
+                metrics_num_train_tokens = (
+                    self.num_tokens(train_dataloader, steps_from_profile) * args.gradient_accumulation_steps
+                )
+            metrics = speed_metrics(
+                "train",
+                step_runtime_from_profile * steps_from_profile,
+                num_samples=metrics_num_train_samples,
+                num_steps=steps_from_profile,
+                num_tokens=metrics_num_train_tokens,
             )
-        metrics = speed_metrics(
-            "train",
-            step_runtime_from_profile * steps_from_profile,
-            num_samples=metrics_num_train_samples,
-            num_steps=steps_from_profile,
-            num_tokens=metrics_num_train_tokens,
-        )
+        else:
+            metrics = {}
         self.store_flos()
         metrics["total_flos"] = self.state.total_flos
         metrics["train_loss"] = train_loss
