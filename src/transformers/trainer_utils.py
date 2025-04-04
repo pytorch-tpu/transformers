@@ -351,10 +351,9 @@ def is_main_process(local_rank):
     `local_rank`.
     """
     if is_torch_xla_available():
-        import torch_xla.core.xla_model as xm
         import torch_xla.runtime as xr
 
-        return xm.global_ordinal() == 0
+        return xr.global_ordinal() == 0
     return local_rank in [-1, 0]
 
 
