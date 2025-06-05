@@ -386,6 +386,10 @@ class Trainer:
         self.args = args
         # Seed must be set before instantiating the model when using model
         set_seed(self.args.seed)
+        
+        import torch_xla
+        torch_xla.manual_seed(self.args.seed)
+
         enable_full_determinism(self.args.seed) if self.args.full_determinism else set_seed(self.args.seed)
         self.hp_name = None
         self.deepspeed = None
@@ -906,6 +910,7 @@ class Trainer:
             )
             # torch_dataloader = DataLoader(train_dataset, **dataloader_params)
             logger.info(f"PIZ: self._train_batch_size (global_batch_size): {self._train_batch_size}")
+            logger.info(f"PIZ: num_replicas: {num_replicas}")
             device = xm.xla_device()
             torch_dataloader = DataLoader(
                 train_dataset,
@@ -2187,7 +2192,7 @@ class Trainer:
 
         # Skip the first epochs_trained epochs to get the random state of the dataloader at the right point.
         if not args.ignore_data_skip:
-            logger.info("PIZ: ignore data skip")
+            logger.info(f"PIZ: ignore data skip. epochs_trained = {epochs_trained}")
             for epoch in range(epochs_trained):
                 sampler = get_dataloader_sampler(train_dataloader)
                 sampler_kinds = [RandomSampler]
@@ -2278,7 +2283,7 @@ class Trainer:
                     self.control = self.callback_handler.on_step_begin(args, self.state, self.control)
 
                 with self.accelerator.accumulate(model):
-                    tr_loss_step = self.training_step(model, inputs)
+                    tr_loss_step = self.training_step(model, inputs, epoch=epoch, step=step)
                 if (
                     args.logging_nan_inf_filter
                     and not is_torch_xla_available()
@@ -3204,7 +3209,7 @@ class Trainer:
 
         return ctx_manager
 
-    def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]]) -> torch.Tensor:
+    def training_step(self, model: nn.Module, inputs: Dict[str, Union[torch.Tensor, Any]], epoch: int | None = None, step: int | None = None) -> torch.Tensor:
         """
         Perform a training step on a batch of inputs.
 
@@ -3230,7 +3235,7 @@ class Trainer:
             return loss_mb.reduce_mean().detach().to(self.args.device)
 
         with self.compute_loss_context_manager():
-            loss = self.compute_loss(model, inputs)
+            loss = self.compute_loss(model, inputs, epoch=epoch, step=step)
 
         if self.args.n_gpu > 1:
             loss = loss.mean()  # mean() to average on multi-gpu parallel training
@@ -3243,7 +3248,7 @@ class Trainer:
 
         return loss.detach() / self.args.gradient_accumulation_steps
 
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, epoch: int | None = None, step: int | None = None):
         """
         How the loss is computed by Trainer. By default, all models return the loss in the first element.
 
@@ -3253,6 +3258,27 @@ class Trainer:
             labels = inputs.pop("labels")
         else:
             labels = None
+        
+        def serialize_inputs(v):
+            """
+            Serialize inputs to a JSON-compatible format for debugging.
+            """
+            if isinstance(v, torch.Tensor):
+                return v.cpu().numpy().tolist()
+            elif isinstance(v, (list, tuple)):
+                return [serialize_inputs(i) for i in v]
+            elif isinstance(v, dict):
+                return {k: serialize_inputs(v) for k, v in v.items()}
+            else:
+                return str(v)
+            
+        # Save the inputs into a debugging folder in the output directory.
+        debug_dir = os.path.join(self.args.output_dir, "debug_dataloader")
+        os.makedirs(debug_dir, exist_ok=True)
+        with open(os.path.join(debug_dir, f"inputs-{epoch}-{step}.json"), "w") as f:
+            import json
+            json.dump(serialize_inputs(inputs), f)
+
         outputs = model(**inputs)
         # Save past state if it exists
         # TODO: this needs to be fixed and made cleaner later.
